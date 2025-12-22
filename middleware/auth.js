@@ -2,7 +2,7 @@
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 
-// Core auth middleware: check JWT and attach user info to req.user
+// Core auth middleware
 export const authMiddleware = async (req, res, next) => {
   const header = req.headers.authorization;
 
@@ -30,6 +30,12 @@ export const authMiddleware = async (req, res, next) => {
 
     next();
   } catch (err) {
+    if (err.name === "TokenExpiredError") {
+      return res.status(401).json({
+        message: "Session expired. Please login again."
+      });
+    }
+
     console.error("Auth middleware error:", err);
     return res.status(401).json({ message: "Invalid token" });
   }
@@ -44,5 +50,4 @@ export const requireRole = (roles) => (req, res, next) => {
   next();
 };
 
-// allow manager or admin where needed
 export const requireManager = requireRole(["manager", "admin"]);
