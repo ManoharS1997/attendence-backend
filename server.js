@@ -54,8 +54,13 @@ app.use(
 // ==============================
 // MIDDLEWARE
 // ==============================
+// ⛔ Register payslip routes FIRST (binary-safe)
+app.use("/api/payslips", payslipManagementRoutes);
+
+// JSON middleware AFTER
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
+
 
 // ==============================
 // HEALTH CHECK
