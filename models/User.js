@@ -1,3 +1,4 @@
+// models/User.js
 import mongoose from "mongoose";
 
 const userSchema = new mongoose.Schema(
@@ -5,7 +6,8 @@ const userSchema = new mongoose.Schema(
     employeeId: {
       type: String,
       unique: true,
-      index: true
+      index: true,
+      required: true
     },
 
     fullName: {
@@ -33,6 +35,32 @@ const userSchema = new mongoose.Schema(
     designation: {
       type: String,
       default: ""
+    },
+
+    // Leave configuration fields
+    totalLeaveEntitlement: {
+      type: Number,
+      default: 16
+    },
+
+    publicHolidays: {
+      type: Number,
+      default: 0
+    },
+
+    weekendHolidays: {
+      type: Number,
+      default: 0
+    },
+
+    carryForward2025: {
+      type: Number,
+      default: 0
+    },
+
+    mustChangePassword: {
+      type: Boolean,
+      default: true
     },
 
     isActive: {

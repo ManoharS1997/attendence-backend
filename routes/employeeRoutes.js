@@ -4,6 +4,7 @@ import bcrypt from "bcryptjs";
 import User from "../models/User.js";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
 import Log from "../models/Log.js";
+import { generateEmployeeId } from "../utils/generateEmployeeId.js";
 
 const router = express.Router();
 
@@ -31,19 +32,28 @@ router.post(
         laptopId,
         password,
         totalLeaveEntitlement,
-        // publicHolidays,  // ❌ now ignored – system driven
-        // weekendHolidays, // ❌ now ignored – system driven
         carryForward2025,
       } = req.body;
 
+      // Check if email exists
       const existing = await User.findOne({ email });
       if (existing) {
         return res.status(400).json({ message: "Email already exists" });
       }
 
+      // Generate unique employee ID
+      const employeeId = await generateEmployeeId();
+
+      // Check if generated employeeId already exists
+      const existingId = await User.findOne({ employeeId });
+      if (existingId) {
+        return res.status(400).json({ message: "Employee ID already exists. Please try again." });
+      }
+
       const hash = await bcrypt.hash(password || "Emp@123", 10);
 
       const user = await User.create({
+        employeeId,
         fullName,
         email,
         laptopId,
@@ -53,8 +63,6 @@ router.post(
         totalLeaveEntitlement: Number(totalLeaveEntitlement ?? 16),
 
         // publicHolidays + weekendHolidays are now system-driven
-        // (mandatory holidays + weekends are auto from calendar;
-        // optional public holidays per employee default to 0)
         publicHolidays: 0,
         weekendHolidays: 0,
 
@@ -72,12 +80,13 @@ router.post(
           userName: req.user.fullName,
           userEmail: req.user.email,
           role: req.user.role,
-          description: `Created employee ${user.fullName} (${user.email})`,
+          description: `Created employee ${user.fullName} (${user.email}) with ID ${employeeId}`,
           status: "SUCCESS",
           ipAddress: getClientIp(req),
           details: {
             employeeId: user._id,
             email: user.email,
+            employeeCode: employeeId,
           },
         });
       } catch (logErr) {
@@ -167,8 +176,6 @@ router.patch(
     try {
       const {
         totalLeaveEntitlement,
-        // publicHolidays,   // ❌ ignored
-        // weekendHolidays,  // ❌ ignored
         carryForward2025,
       } = req.body;
 
