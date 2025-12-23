@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "nodemon server.js",
     "start": "node server.js",
-    "seed": "node seedAdminManager.js"
+    "seed": "node seedAdminManager.js",
+    "start:with-seed": "npm run seed && npm start"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
