@@ -1,4 +1,3 @@
-// server.js
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -20,17 +19,37 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 /* =========================
-   CORS
+   CORS (FIXED)
 ========================= */
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://localhost:4173",
+  "http://44.217.109.241:5173"
+];
+
 app.use(
   cors({
-    origin: ["http://localhost:5173", "http://localhost:4173"],
-    credentials: true
+    origin: function (origin, callback) {
+      // allow requests with no origin (Postman, curl)
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("Not allowed by CORS"));
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"]
   })
 );
 
+// ✅ Explicitly handle preflight
+app.options("*", cors());
+
 /* =========================
-   BODY PARSERS (IMPORTANT)
+   BODY PARSERS
 ========================= */
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
