@@ -1,26 +1,22 @@
-# Use official Node.js 18 base image
+# Use official Node.js LTS
 FROM node:18
 
 # Set working directory
 WORKDIR /app
 
-# Install required build tools for bcrypt
-RUN apt-get update && apt-get install -y python3 make g++ && apt-get clean
-
-# Copy only package files first for caching
+# Copy package files first (for caching)
 COPY package*.json ./
 
 # Install dependencies
-RUN npm install --build-from-source
+RUN npm install
 
-# Install nodemon globally for development
-RUN npm install -g nodemon
-
-# Copy rest of the app files
+# Copy full source code
 COPY . .
 
-# Expose port 5000
+# Expose backend port
 EXPOSE 5000
 
-# Run seed and then start the app
+# 🔥 IMPORTANT:
+# 1️⃣ Run seed (create admin/manager if missing)
+# 2️⃣ Start backend server
 CMD ["sh", "-c", "npm run seed && npm start"]
