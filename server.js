@@ -13,7 +13,8 @@ import projectRoutes from "./routes/projectRoutes.js";
 import taskRoutes from "./routes/taskRoutes.js";
 import logRoutes from "./routes/logRoutes.js";
 import holidayRoutes from "./routes/holidayRoutes.js";
-import payslipManagementRoutes from "./routes/payslipManagementRoutes.js";
+import payslipManagementRoutes from "./routes/payslipManagementRoutes.js"; // Updated
+import utilityRoutes from "./routes/utilityRoutes.js";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -30,13 +31,10 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: function (origin, callback) {
-      // allow requests with no origin (Postman, curl)
       if (!origin) return callback(null, true);
-
       if (allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
-
       return callback(new Error("Not allowed by CORS"));
     },
     credentials: true,
@@ -45,7 +43,6 @@ app.use(
   })
 );
 
-// ✅ Explicitly handle preflight
 app.options("*", cors());
 
 /* =========================
@@ -73,7 +70,8 @@ app.use("/api/projects", projectRoutes);
 app.use("/api/tasks", taskRoutes);
 app.use("/api/logs", logRoutes);
 app.use("/api/holidays", holidayRoutes);
-app.use("/api/payslips", payslipManagementRoutes);
+app.use("/api/payslips", payslipManagementRoutes); // Updated route
+app.use("/api/utils", utilityRoutes);
 
 /* =========================
    GLOBAL ERROR HANDLER
