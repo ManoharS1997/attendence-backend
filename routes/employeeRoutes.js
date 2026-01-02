@@ -20,6 +20,7 @@ const getClientIp = (req) => {
  * POST /api/employees
  * Manager creates an employee login with leave config
  */
+// routes/employeeRoutes.js - Update the POST /api/employees route
 router.post(
   "/",
   authMiddleware,
@@ -31,6 +32,7 @@ router.post(
         email,
         laptopId,
         password,
+        jobTitle, // NEW: Job title
         totalLeaveEntitlement,
         carryForward2025,
       } = req.body;
@@ -58,6 +60,7 @@ router.post(
         email,
         laptopId,
         role: "employee",
+        jobTitle: jobTitle || "Software Engineer", // NEW: Default job title
         passwordHash: hash,
 
         totalLeaveEntitlement: Number(totalLeaveEntitlement ?? 16),
@@ -80,13 +83,14 @@ router.post(
           userName: req.user.fullName,
           userEmail: req.user.email,
           role: req.user.role,
-          description: `Created employee ${user.fullName} (${user.email}) with ID ${employeeId}`,
+          description: `Created employee ${user.fullName} (${user.email}) with ID ${employeeId} as ${user.jobTitle}`,
           status: "SUCCESS",
           ipAddress: getClientIp(req),
           details: {
             employeeId: user._id,
             email: user.email,
             employeeCode: employeeId,
+            jobTitle: user.jobTitle
           },
         });
       } catch (logErr) {

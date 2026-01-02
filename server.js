@@ -1,3 +1,4 @@
+// server.js
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -13,7 +14,8 @@ import projectRoutes from "./routes/projectRoutes.js";
 import taskRoutes from "./routes/taskRoutes.js";
 import logRoutes from "./routes/logRoutes.js";
 import holidayRoutes from "./routes/holidayRoutes.js";
-import payslipRoutes from "./routes/payslipManagementRoutes.js"; // Make sure this is imported
+import payslipRoutes from "./routes/payslipManagementRoutes.js";
+import bankRoutes from "./routes/bankRoutes.js";
 import utilityRoutes from "./routes/utilityRoutes.js";
 
 const app = express();
@@ -52,7 +54,7 @@ app.get("/", (req, res) => {
   res.send("🚀 Attendance & Payslip API running");
 });
 
-// API Routes - MAKE SURE PAYSLIP ROUTES ARE INCLUDED HERE
+// API Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/attendance", attendanceRoutes);
 app.use("/api/employees", employeeRoutes);
@@ -62,7 +64,8 @@ app.use("/api/projects", projectRoutes);
 app.use("/api/tasks", taskRoutes);
 app.use("/api/logs", logRoutes);
 app.use("/api/holidays", holidayRoutes);
-app.use("/api/payslips", payslipRoutes); // THIS LINE IS IMPORTANT
+app.use("/api/payslips", payslipRoutes);
+app.use("/api/bank", bankRoutes); // NEW: Bank details management
 app.use("/api/utils", utilityRoutes);
 
 // Global error handler
@@ -79,7 +82,11 @@ async function startServer() {
     await connectDB();
     app.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
-      console.log(`📄 Payslip routes available at: http://localhost:${PORT}/api/payslips`);
+      console.log(`📄 API Endpoints:`);
+      console.log(`   • Auth: http://localhost:${PORT}/api/auth`);
+      console.log(`   • Bank Details: http://localhost:${PORT}/api/bank`);
+      console.log(`   • Payslips: http://localhost:${PORT}/api/payslips`);
+      console.log(`   • Employees: http://localhost:${PORT}/api/employees`);
     });
   } catch (err) {
     console.error("❌ Server startup failed:", err);
