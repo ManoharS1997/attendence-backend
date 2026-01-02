@@ -1,10 +1,28 @@
+import express from "express";
 import puppeteer from "puppeteer";
+import authMiddleware from "../middleware/authMiddleware.js";
+import Payslip from "../models/Payslip.js";
 
-router.get("/:id/download", async (req, res) => {
+const router = express.Router();
+
+/**
+ * DOWNLOAD PAYSLIP PDF (SINGLE & SAFE)
+ */
+router.get("/:id/download", authMiddleware, async (req, res) => {
   try {
-    const payslip = await Payslip.findById(req.params.id).populate("employee");
+    const payslip = await Payslip.findById(req.params.id)
+      .populate("employee");
+
     if (!payslip) {
       return res.status(404).json({ message: "Payslip not found" });
+    }
+
+    // Employee can download ONLY their own payslip
+    if (
+      req.user.role === "EMPLOYEE" &&
+      payslip.employee._id.toString() !== req.user.id
+    ) {
+      return res.status(403).json({ message: "Access denied" });
     }
 
     const browser = await puppeteer.launch({
@@ -14,7 +32,7 @@ router.get("/:id/download", async (req, res) => {
 
     const page = await browser.newPage();
 
-   const html = `
+    const html = `
 <!DOCTYPE html>
 <html>
 <head>
@@ -130,10 +148,7 @@ router.get("/:id/download", async (req, res) => {
     </div>
 
     <table>
-      <tr>
-        <th>Earnings</th>
-        <th>Amount (₹)</th>
-      </tr>
+      <tr><th>Earnings</th><th>Amount (₹)</th></tr>
       <tr><td>Basic Pay</td><td>${payslip.basicSalary}</td></tr>
       <tr><td>HRA</td><td>${payslip.hra || 0}</td></tr>
       <tr><td>Allowances</td><td>${payslip.allowances || 0}</td></tr>
@@ -141,10 +156,7 @@ router.get("/:id/download", async (req, res) => {
     </table>
 
     <table>
-      <tr>
-        <th>Deductions</th>
-        <th>Amount (₹)</th>
-      </tr>
+      <tr><th>Deductions</th><th>Amount (₹)</th></tr>
       <tr><td>Deductions</td><td>${payslip.deductions || 0}</td></tr>
       <tr class="total"><td>Total Deductions</td><td>${payslip.deductions || 0}</td></tr>
     </table>
@@ -170,38 +182,24 @@ router.get("/:id/download", async (req, res) => {
     await page.setContent(html, { waitUntil: "networkidle0" });
 
     const pdfBuffer = await page.pdf({
-  format: "A4",
-  printBackground: true,
-  margin: { top: "20mm", bottom: "20mm" }
-});
-
-
-
-    await browser.close();
-
-res.set({
-  "Content-Type": "application/pdf",
-  "Content-Disposition": `attachment; filename="Payslip-${payslip.employee?.fullName}-${payslip.month}-${payslip.year}.pdf"`,
-  "Content-Length": pdfBuffer.length,
-});
-
-res.send(pdfBuffer);
-
-
-res.send(pdfBuffer);
+      format: "A4",
+      printBackground: true,
+      margin: { top: "20mm", bottom: "20mm" }
+    });
 
     await browser.close();
 
     res.set({
       "Content-Type": "application/pdf",
       "Content-Disposition": `attachment; filename="Payslip-${payslip.employee?.fullName}-${payslip.month}-${payslip.year}.pdf"`,
-
-      "Content-Length": pdfBuffer.length,
+      "Content-Length": pdfBuffer.length
     });
 
-    res.send(pdfBuffer);
-  } catch (err) {
-    console.error("Payslip download error:", err);
-    res.status(500).json({ message: "Failed to generate payslip PDF" });
+    return res.end(pdfBuffer);
+  } catch (error) {
+    console.error("Payslip download error:", error);
+    return res.status(500).json({ message: "Failed to generate payslip PDF" });
   }
 });
+
+export default router;
