@@ -1,4 +1,3 @@
-// attendance-backend/routes/leaveRoutes.js
 import express from "express";
 import Attendance from "../models/Attendance.js";
 import User from "../models/User.js";
@@ -26,43 +25,42 @@ const buildDateFilter = (month, year) => {
 const accumulateUsage = (records) => {
   let fullLeaves = 0;
   let halfDays = 0;
+  let extraHours = 0;
+  let compOffDays = 0;
 
   for (const r of records) {
     switch (r.status) {
       case "EMERGENCY LEAVE":
       case "CASUAL LEAVE":
+      case "SICK LEAVE":
         fullLeaves += 1;
         break;
       case "PRESENT HALF DAY":
       case "Half Day - Fun Thursday":
-      case "Half Day- Development":
+      case "Half Day - Development":
         halfDays += 1;
+        break;
+      case "COMPOFF":
+        compOffDays += 1;
         break;
       default:
         break;
     }
+    
+    // Add extra hours
+    if (r.extraHoursWorked) {
+      extraHours += r.extraHoursWorked;
+    }
   }
 
-  return { fullLeaves, halfDays };
+  return { fullLeaves, halfDays, extraHours, compOffDays };
 };
 
 /**
  * Build monthly summary for one user.
- *
- * Auto rules:
- *  - Weekend holidays:
- *      • every Sunday
- *      • second Saturday of every month
- *    (4th Saturday is considered working)
- *  - Mandatory public holidays:
- *      • 26 Jan  (Republic Day)
- *      • 15 Aug  (Independence Day)
- *      • 2 Oct   (Gandhi Jayanti)
- *  - Optional public holidays:
- *      • value from user.publicHolidays (set by Manager only)
  */
 const buildSummary = (user, records, month, year) => {
-  const { fullLeaves, halfDays } = accumulateUsage(records);
+  const { fullLeaves, halfDays, extraHours, compOffDays } = accumulateUsage(records);
 
   let weekendHolidays = user.weekendHolidays || 0;
   let mandatoryPublic = 0;
@@ -78,8 +76,8 @@ const buildSummary = (user, records, month, year) => {
   const totalEntitlement =
     (user.totalLeaveEntitlement || 0) + (user.carryForward2025 || 0);
 
-  const leavesTaken = fullLeaves + halfDays * 0.5;
-  const balanceLeaves = totalEntitlement - fullLeaves;
+  const leavesTaken = fullLeaves + halfDays * 0.5 - compOffDays;
+  const balanceLeaves = totalEntitlement - fullLeaves + compOffDays;
   const balanceAfterHalfDays = totalEntitlement - leavesTaken;
 
   return {
@@ -96,7 +94,13 @@ const buildSummary = (user, records, month, year) => {
     leavesTaken,
     balanceLeaves,
     totalHalfDays: halfDays,
-    balanceAfterHalfDays
+    compOffDays,
+    extraHours,
+    balanceAfterHalfDays,
+
+    // NEW: Add year and month for frontend filtering
+    year: year || new Date().getFullYear(),
+    month: month || new Date().getMonth() + 1
   };
 };
 
@@ -113,12 +117,48 @@ router.get("/summary/me", authMiddleware, async (req, res) => {
       user: user._id,
       ...buildDateFilter(month, year)
     };
-    const records = await Attendance.find(filter);
+    const records = await Attendance.find({
+  ...filter,
+  "managerDecision.status": "APPROVED"
+});
 
     const summary = buildSummary(user, records, month, year);
     res.json(summary);
   } catch (err) {
     console.error("Leave summary me error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+/**
+ * NEW: GET /api/leave/years
+ * Get list of available years from attendance records
+ */
+router.get("/years", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.role === "employee" ? req.user.id : req.query.userId;
+    
+    const records = await Attendance.find({ user: userId }).select("date");
+    
+    const yearsSet = new Set();
+    records.forEach(record => {
+      const year = record.date.split("-")[2];
+      if (year) {
+        yearsSet.add(parseInt(year));
+      }
+    });
+    
+    // Add current and previous years if none found
+    const currentYear = new Date().getFullYear();
+    yearsSet.add(currentYear);
+    yearsSet.add(currentYear - 1);
+    yearsSet.add(currentYear - 2);
+    
+    const years = Array.from(yearsSet).sort((a, b) => b - a); // Descending
+    
+    res.json(years);
+  } catch (err) {
+    console.error("Get years error:", err);
     res.status(500).json({ message: "Server error" });
   }
 });
@@ -172,7 +212,7 @@ router.get(
 /**
  * DELETE /api/leave/summary/:userId?month=MM&year=YYYY
  * Manager ONLY – delete all attendance for that employee
- * for the given month/year (effectively clearing that month’s summary).
+ * for the given month/year (effectively clearing that month's summary).
  */
 router.delete(
   "/summary/:userId",
@@ -210,7 +250,6 @@ router.delete(
 /**
  * GET /api/leave/calendar?month=MM&year=YYYY
  * Simple holiday calendar for the selected month – same for all users.
- * You can use this in project overview / discussion UI to highlight holidays.
  */
 router.get("/calendar", authMiddleware, async (req, res) => {
   try {

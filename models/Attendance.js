@@ -1,4 +1,3 @@
-// models/Attendance.js
 import mongoose from "mongoose";
 
 const { Schema } = mongoose;
@@ -22,7 +21,6 @@ export const ATTENDANCE_STATUS = [
   "ABSENT",
   "SICK LEAVE"
 ];
-
 
 /**
  * Extra work details for COMPOFF.
@@ -126,10 +124,22 @@ const attendanceSchema = new Schema(
       default: false
     },
 
+    // NEW: Track extra hours worked
+    extraHoursWorked: {
+      type: Number,
+      default: 0
+    },
+
+    // NEW: Track if extra hours approved for comp-off
+    extraHoursApproved: {
+      type: Boolean,
+      default: false
+    },
+
     // For COMPOFF status only
     extraWork: extraWorkSchema,
 
-    // Manager’s decision (PENDING / APPROVED / REJECTED)
+    // Manager's decision (PENDING / APPROVED / REJECTED)
     managerDecision: {
       type: managerDecisionSchema,
       default: () => ({ status: "PENDING" })
@@ -139,6 +149,11 @@ const attendanceSchema = new Schema(
     timestamps: true
   }
 );
+
+// Add index for faster queries
+attendanceSchema.index({ user: 1, date: 1 }, { unique: true });
+attendanceSchema.index({ user: 1, month: 1, year: 1 });
+attendanceSchema.index({ date: 1 });
 
 const Attendance = mongoose.model("Attendance", attendanceSchema);
 

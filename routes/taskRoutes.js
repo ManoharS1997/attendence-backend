@@ -1,4 +1,3 @@
-// routes/taskRoutes.js
 import express from "express";
 import Task from "../models/Task.js";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
@@ -48,22 +47,28 @@ router.post("/", async (req, res) => {
     const isManager = req.user.role === "manager";
 
     let finalAssignedUserId = assignedUserId;
-    let finalHoursAllocated = Number(hoursAllocated || 0);
+let finalHoursAllocated = Number(hoursAllocated || 0);
 
-    // Employees can only assign task to themselves, and not allocate hours
-    if (!isManager) {
-      finalAssignedUserId = req.user.id || req.user._id;
-      finalHoursAllocated = 0;
-    }
+// Employees can only assign task to themselves, and not allocate hours
+if (!isManager) {
+  finalAssignedUserId = req.user.id || req.user._id;
+  finalHoursAllocated = 0;
+}
 
-    const start = originalClosureDate || "";
-    const end = estimatedDate || "";
+const start = originalClosureDate || "";
+const end = estimatedDate || "";
 
-    // auto-calculate working days between start & end, excluding weekends/holidays
-    let workingDays = Number(noOfDays || 0);
-    if (start && end) {
-      workingDays = countWorkingDaysInRange(start, end);
-    }
+// auto-calculate working days
+let workingDays = Number(noOfDays || 0);
+if (start && end) {
+  workingDays = await countWorkingDaysInRange(start, end);
+}
+
+// 🔧 AUTO HOURS FIX
+if (!finalHoursAllocated && workingDays > 0) {
+  finalHoursAllocated = workingDays * 8;
+}
+
 
     const task = await Task.create({
       projectId,
@@ -182,7 +187,7 @@ router.patch("/:id", async (req, res) => {
     if (req.body.originalClosureDate && req.body.estimatedDate) {
       const start = req.body.originalClosureDate;
       const end = req.body.estimatedDate;
-      req.body.noOfDays = countWorkingDaysInRange(start, end);
+      req.body.noOfDays = await countWorkingDaysInRange(start, end); // FIXED: Added await
     }
 
     // Manager/Admin can update whole task

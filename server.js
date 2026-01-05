@@ -1,4 +1,3 @@
-// server.js
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -54,6 +53,13 @@ app.get("/", (req, res) => {
   res.send("🚀 Attendance & Payslip API running");
 });
 
+// NEW: Notification middleware
+app.use((req, res, next) => {
+  // Add notification headers for frontend
+  res.setHeader('X-Notification-System', 'active');
+  next();
+});
+
 // API Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/attendance", attendanceRoutes);
@@ -65,8 +71,28 @@ app.use("/api/tasks", taskRoutes);
 app.use("/api/logs", logRoutes);
 app.use("/api/holidays", holidayRoutes);
 app.use("/api/payslips", payslipRoutes);
-app.use("/api/bank", bankRoutes); // NEW: Bank details management
+app.use("/api/bank", bankRoutes);
 app.use("/api/utils", utilityRoutes);
+
+// NEW: Notification endpoint
+app.get("/api/notifications", (req, res) => {
+  const currentMonth = new Date().getMonth() + 1;
+  const currentYear = new Date().getFullYear();
+  
+  res.json({
+    message: `Welcome to ${currentMonth}/${currentYear}`,
+    currentMonth,
+    currentYear,
+    notifications: [
+      {
+        id: 1,
+        type: "info",
+        message: "System is running normally",
+        timestamp: new Date().toISOString()
+      }
+    ]
+  });
+});
 
 // Global error handler
 app.use((err, req, res, next) => {
@@ -84,9 +110,10 @@ async function startServer() {
       console.log(`🚀 Server running on port ${PORT}`);
       console.log(`📄 API Endpoints:`);
       console.log(`   • Auth: http://localhost:${PORT}/api/auth`);
-      console.log(`   • Bank Details: http://localhost:${PORT}/api/bank`);
-      console.log(`   • Payslips: http://localhost:${PORT}/api/payslips`);
-      console.log(`   • Employees: http://localhost:${PORT}/api/employees`);
+      console.log(`   • Attendance: http://localhost:${PORT}/api/attendance`);
+      console.log(`   • Tasks: http://localhost:${PORT}/api/tasks`);
+      console.log(`   • Leave: http://localhost:${PORT}/api/leave`);
+      console.log(`   • Notifications: http://localhost:${PORT}/api/notifications`);
     });
   } catch (err) {
     console.error("❌ Server startup failed:", err);

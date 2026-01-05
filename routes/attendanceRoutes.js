@@ -1,4 +1,3 @@
-// routes/attendanceRoutes.js
 import express from "express";
 import Attendance from "../models/Attendance.js";
 import User from "../models/User.js";
@@ -8,26 +7,33 @@ import Log from "../models/Log.js";
 
 const router = express.Router();
 
-/* ------------------------ helpers ------------------------ */
+/* ======================== HELPER FUNCTIONS ======================== */
 
+/**
+ * Get client IP address from request headers
+ */
 const getClientIp = (req) => {
   const xff = req.headers["x-forwarded-for"];
   if (xff && typeof xff === "string") return xff.split(",")[0].trim();
   return req.socket?.remoteAddress || "unknown";
 };
 
+/**
+ * Build date filter for MongoDB queries
+ */
 const buildDateFilter = (month, year) => {
   const filter = {};
   if (month && year) {
-    const regex = new RegExp(`-${month}-${year}$`);
-    filter.date = { $regex: regex };
+    filter.date = { $regex: `-${String(month).padStart(2, "0")}-${year}$` };
   } else if (year) {
-    const regex = new RegExp(`-${year}$`);
-    filter.date = { $regex: regex };
+    filter.date = { $regex: `-${year}$` };
   }
   return filter;
 };
 
+/**
+ * Get today's date in DD-MM-YYYY format
+ */
 const todayString = () => {
   const d = new Date();
   const dd = String(d.getDate()).padStart(2, "0");
@@ -36,6 +42,9 @@ const todayString = () => {
   return `${dd}-${mm}-${yyyy}`;
 };
 
+/**
+ * Check if a status is considered a leave status
+ */
 const isLeaveStatus = (status) =>
   [
     "EMERGENCY LEAVE",
@@ -44,16 +53,60 @@ const isLeaveStatus = (status) =>
     "Half Day - Fun Thursday",
     "Half Day - Development",
     "COMPOFF",
-    "ABSENT"
+    "ABSENT",
+    "SICK LEAVE"
   ].includes(status);
+
+/**
+ * Calculate extra hours worked beyond 8 working hours
+ * Returns decimal hours (e.g., 2.5)
+ */
+const calculateExtraHours = (workInTime, workOutTime) => {
+  if (!workInTime || !workOutTime) return 0;
+
+  const [inH, inM] = workInTime.split(":").map(Number);
+  const [outH, outM] = workOutTime.split(":").map(Number);
+
+  // Validate time values
+  if ([inH, inM, outH, outM].some(v => Number.isNaN(v))) {
+    return 0;
+  }
+
+  const workedMinutes = (outH * 60 + outM) - (inH * 60 + inM);
+  const regularMinutes = 8 * 60; // 8 working hours
+
+  if (workedMinutes <= regularMinutes) return 0;
+
+  return Number(((workedMinutes - regularMinutes) / 60).toFixed(2));
+};
+
+/**
+ * Create log entry for auditing
+ */
+const createLog = async (logData) => {
+  try {
+    await Log.create(logData);
+  } catch (logErr) {
+    console.error("Log creation error:", logErr.message);
+  }
+};
+
+/* ======================== ROUTES ======================== */
 
 /* ------------------------ POST /api/attendance ------------------------ */
 /**
- * Employee marks / updates attendance for a day
+ * Employee marks/updates attendance for a day
+ * Auto-approves same-day present full day
+ * Other statuses require manager approval
  */
 router.post("/", authMiddleware, async (req, res) => {
   try {
     const { date, status, workInTime, workOutTime, note, extraWork } = req.body;
+
+    // Validate required fields
+    if (!date || !status) {
+      return res.status(400).json({ message: "Date and status are required" });
+    }
 
     const existing = await Attendance.findOne({
       user: req.user.id,
@@ -62,16 +115,24 @@ router.post("/", authMiddleware, async (req, res) => {
 
     const isToday = date === todayString();
     const leaveLike = isLeaveStatus(status);
+    
+    // Calculate extra hours if present full day
+    const extraHoursWorked = (workInTime && workOutTime)
+      ? calculateExtraHours(workInTime, workOutTime)
+      : 0;
 
-    // 1) simple same-day present (no approval required)
+    // 1) Auto-approve same-day present full day (no existing record)
     if (!existing && isToday && !leaveLike && status === "PRESENT FULL DAY") {
       const payload = {
         user: req.user.id,
         date,
         status,
-        workInTime,
-        workOutTime,
-        note,
+        workInTime: workInTime || "",
+        workOutTime: workOutTime || "",
+        note: note || "",
+        extraHoursWorked,
+        extraHoursApproved: false,
+        compOffDaysEarned: 0,
         isLeaveRequest: false,
         managerDecision: {
           status: "APPROVED",
@@ -83,23 +144,38 @@ router.post("/", authMiddleware, async (req, res) => {
 
       const record = await Attendance.create(payload);
 
-      try {
-        await Log.create({
-          type: "OPERATION",
-          action: "MARK_ATTENDANCE",
-          entity: "ATTENDANCE",
+      // Auto-create extra hours request if extra hours worked
+      if (extraHoursWorked > 0) {
+        await AttendanceRequest.create({
           user: req.user.id,
-          userName: req.user.fullName,
-          userEmail: req.user.email,
-          role: req.user.role,
-          description: `Marked attendance as ${status} on ${date}`,
-          status: "SUCCESS",
-          ipAddress: getClientIp(req),
-          details: { date, status }
+          attendance: record._id,
+          date,
+          type: "UPDATE",
+          fromStatus: "PRESENT FULL DAY",
+          toStatus: "COMPOFF",
+          extraHours: extraHoursWorked,
+          note: `Auto extra hours request for ${extraHoursWorked} hrs`,
+          status: "PENDING"
         });
-      } catch (logErr) {
-        console.error("Log MARK_ATTENDANCE error:", logErr.message);
+
+        record.isLeaveRequest = true;
+        await record.save();
       }
+
+      // Log the action
+      await createLog({
+        type: "OPERATION",
+        action: "MARK_ATTENDANCE",
+        entity: "ATTENDANCE",
+        user: req.user.id,
+        userName: req.user.fullName,
+        userEmail: req.user.email,
+        role: req.user.role,
+        description: `Marked attendance as ${status} on ${date}`,
+        status: "SUCCESS",
+        ipAddress: getClientIp(req),
+        details: { date, status, extraHoursWorked }
+      });
 
       return res.status(201).json({
         message: "Attendance saved",
@@ -107,15 +183,16 @@ router.post("/", authMiddleware, async (req, res) => {
       });
     }
 
-    // 2) everything else => AttendanceRequest (PENDING)
+    // 2) All other cases require approval
     const requestPayload = {
       user: req.user.id,
       date,
       type: existing ? "UPDATE" : "CREATE",
       toStatus: status,
-      toWorkInTime: workInTime,
-      toWorkOutTime: workOutTime,
-      note
+      toWorkInTime: workInTime || "",
+      toWorkOutTime: workOutTime || "",
+      note: note || "",
+      status: "PENDING"
     };
 
     if (existing) {
@@ -125,48 +202,199 @@ router.post("/", authMiddleware, async (req, res) => {
       requestPayload.fromWorkOutTime = existing.workOutTime;
     }
 
+    // Handle extra hours or comp-off
     if (status === "COMPOFF") {
       requestPayload.extraWork = extraWork || null;
+    } else if (status === "PRESENT FULL DAY" && extraHoursWorked > 0) {
+      requestPayload.extraHours = extraHoursWorked;
     }
 
     const requestDoc = await AttendanceRequest.create(requestPayload);
 
-    try {
-      await Log.create({
-        type: "OPERATION",
-        action: "ATTENDANCE_REQUEST_CREATE",
-        entity: "ATTENDANCE_REQUEST",
-        user: req.user.id,
-        userName: req.user.fullName,
-        userEmail: req.user.email,
-        role: req.user.role,
-        description: `Created attendance request for ${date} -> ${status}`,
-        status: "SUCCESS",
-        ipAddress: getClientIp(req),
-        details: {
-          requestId: requestDoc._id,
-          date,
-          toStatus: status,
-          type: requestDoc.type
-        }
-      });
-    } catch (logErr) {
-      console.error("Log ATTENDANCE_REQUEST_CREATE error:", logErr.message);
-    }
+    // Log the request creation
+    await createLog({
+      type: "OPERATION",
+      action: "ATTENDANCE_REQUEST_CREATE",
+      entity: "ATTENDANCE_REQUEST",
+      user: req.user.id,
+      userName: req.user.fullName,
+      userEmail: req.user.email,
+      role: req.user.role,
+      description: `Created attendance request for ${date} -> ${status}`,
+      status: "SUCCESS",
+      ipAddress: getClientIp(req),
+      details: {
+        requestId: requestDoc._id,
+        date,
+        toStatus: status,
+        type: requestDoc.type,
+        extraHours: extraHoursWorked
+      }
+    });
 
     return res.status(202).json({
-      message:
-        "Attendance / leave change sent to Manager for approval. It will reflect in dashboard after approval.",
+      message: "Attendance/leave change sent to Manager for approval",
       requestId: requestDoc._id
     });
+
   } catch (err) {
     console.error("Save attendance error:", err);
+    await createLog({
+      type: "ERROR",
+      action: "MARK_ATTENDANCE",
+      entity: "ATTENDANCE",
+      user: req.user?.id,
+      userName: req.user?.fullName,
+      userEmail: req.user?.email,
+      role: req.user?.role,
+      description: "Failed to save attendance",
+      status: "FAILED",
+      ipAddress: getClientIp(req),
+      details: { error: err.message }
+    });
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+/* ------------------------ POST /api/attendance/extra-hours ------------------------ */
+/**
+ * Employee requests extra hours approval for comp-off
+ */
+router.post("/extra-hours", authMiddleware, async (req, res) => {
+  try {
+    const { date, extraHours, reason } = req.body;
+
+    if (!date || !extraHours || extraHours <= 0) {
+      return res.status(400).json({ 
+        message: "Valid date and positive extra hours are required" 
+      });
+    }
+
+    const attendance = await Attendance.findOne({
+      user: req.user.id,
+      date
+    });
+
+    if (!attendance) {
+      return res.status(404).json({ message: "Attendance record not found" });
+    }
+
+    // Create extra hours approval request
+    const request = await AttendanceRequest.create({
+      user: req.user.id,
+      attendance: attendance._id,
+      date,
+      type: "UPDATE",
+      fromStatus: attendance.status,
+      toStatus: "COMPOFF",
+      extraHours,
+      extraWork: {
+        workedDate: date,
+        hours: extraHours,
+        compOffDate: "",
+        compOffTime: "",
+        reason: reason || ""
+      },
+      note: `Extra hours approval requested: ${extraHours} hours. Reason: ${reason || "No reason provided"}`,
+      status: "PENDING"
+    });
+
+    // Update attendance with extra hours (DO NOT reset existing hours)
+    attendance.extraHoursWorked = (attendance.extraHoursWorked || 0) + extraHours;
+    attendance.isLeaveRequest = true;
+    await attendance.save();
+
+    await createLog({
+      type: "OPERATION",
+      action: "EXTRA_HOURS_REQUEST",
+      entity: "ATTENDANCE",
+      user: req.user.id,
+      userName: req.user.fullName,
+      userEmail: req.user.email,
+      role: req.user.role,
+      description: `Requested ${extraHours} extra hours approval for ${date}`,
+      status: "SUCCESS",
+      ipAddress: getClientIp(req),
+      details: {
+        date,
+        extraHours,
+        reason
+      }
+    });
+
+    res.status(201).json({
+      message: "Extra hours approval request submitted",
+      requestId: request._id
+    });
+
+  } catch (err) {
+    console.error("Extra hours request error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+/* ------------------------ GET /api/attendance/extra-hours/:userId ------------------------ */
+/**
+ * Get total extra hours for an employee
+ * IMPORTANT: Sum ALL extraHoursWorked, not just approved ones
+ */
+router.get("/extra-hours", authMiddleware, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { month, year } = req.query;
+
+    // Check permissions
+    if (req.user.role === "employee" && req.user.id !== userId) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+
+    const filter = { user: userId };
+    if (month && year) {
+      filter.date = { $regex: `-${String(month).padStart(2, "0")}-${year}$` };
+    }
+
+    const records = await Attendance.find(filter);
+
+    // ✅ FIX 2: Sum ALL extraHoursWorked, not just approved ones
+    const totalExtraHours = records.reduce((sum, record) => 
+      sum + (record.extraHoursWorked || 0), 0
+    );
+
+    const approvedExtraHours = records.reduce((sum, record) => 
+      sum + (record.extraHoursApproved ? (record.extraHoursWorked || 0) : 0), 0
+    );
+
+    const pendingExtraHours = totalExtraHours - approvedExtraHours;
+    const compOffBalance = approvedExtraHours / 8; // Convert hours to comp-off days
+
+    const extraHoursRecords = records
+      .filter(r => r.extraHoursWorked > 0)
+      .map(r => ({
+        date: r.date,
+        hours: r.extraHoursWorked,
+        approved: r.extraHoursApproved,
+        status: r.status,
+        compOffDaysEarned: r.compOffDaysEarned || 0
+      }));
+
+    res.json({
+      totalExtraHours,
+      approvedExtraHours,
+      pendingExtraHours,
+      compOffBalance,
+      records: extraHoursRecords
+    });
+
+  } catch (err) {
+    console.error("Get extra hours error:", err);
     res.status(500).json({ message: "Server error" });
   }
 });
 
 /* ------------------------ GET /api/attendance/my ------------------------ */
-
+/**
+ * Get logged-in user's attendance records
+ */
 router.get("/my", authMiddleware, async (req, res) => {
   try {
     const { month, year } = req.query;
@@ -175,7 +403,14 @@ router.get("/my", authMiddleware, async (req, res) => {
       ...buildDateFilter(month, year)
     };
 
-    const records = await Attendance.find(filter).sort({ date: 1 });
+    const records = await Attendance.find({
+      ...filter,
+      $or: [
+        { "managerDecision.status": "APPROVED" },
+        { managerDecision: { $exists: false } }
+      ]
+    }).sort({ date: 1 });
+
     res.json(records);
   } catch (err) {
     console.error("My attendance error:", err);
@@ -183,8 +418,10 @@ router.get("/my", authMiddleware, async (req, res) => {
   }
 });
 
-/* ------------------------ GET /api/attendance (manager/admin) ------------------------ */
-
+/* ------------------------ GET /api/attendance ------------------------ */
+/**
+ * Get all attendance records (manager/admin only)
+ */
 router.get(
   "/",
   authMiddleware,
@@ -195,7 +432,7 @@ router.get(
       const filter = buildDateFilter(month, year);
 
       const records = await Attendance.find(filter)
-        .populate("user")
+        .populate("user", "fullName email role department")
         .sort({ date: 1 });
 
       res.json(records);
@@ -208,7 +445,7 @@ router.get(
 
 /* ------------------------ GET /api/attendance/requests ------------------------ */
 /**
- * Manager – list PENDING attendance / leave change requests
+ * Get pending attendance/leave change requests (manager only)
  */
 router.get(
   "/requests",
@@ -217,7 +454,8 @@ router.get(
   async (req, res) => {
     try {
       const pending = await AttendanceRequest.find({ status: "PENDING" })
-        .populate("user", "fullName email role")
+        .populate("user", "fullName email role department")
+        .populate("attendance")
         .sort({ createdAt: 1 });
 
       res.json(pending);
@@ -229,7 +467,10 @@ router.get(
 );
 
 /* ------------------------ PATCH /api/attendance/requests/:id/decision ------------------------ */
-
+/**
+ * Manager approves/rejects an attendance request
+ * ✅ FIX 1: DO NOT MODIFY daily extra hours during approval
+ */
 router.patch(
   "/requests/:id/decision",
   authMiddleware,
@@ -237,13 +478,12 @@ router.patch(
   async (req, res) => {
     try {
       const { id } = req.params;
-      const { decision } = req.body; // "APPROVED" or "REJECTED"
+      const { decision, comment } = req.body;
 
       if (!["APPROVED", "REJECTED"].includes(decision)) {
         return res.status(400).json({ message: "Invalid decision value" });
       }
 
-      // Load the request with as much info as possible
       const request = await AttendanceRequest.findById(id)
         .populate("attendance")
         .populate("user");
@@ -254,12 +494,11 @@ router.patch(
 
       let attendanceDoc = null;
 
-      // 1) direct ref
+      // Try to find or create attendance record
       if (request.attendance) {
         attendanceDoc = request.attendance;
       }
 
-      // 2) fallback by user+date
       if (!attendanceDoc && request.user && request.date) {
         const userId = request.user._id || request.user;
         attendanceDoc = await Attendance.findOne({
@@ -268,7 +507,7 @@ router.patch(
         });
       }
 
-      // 3) if still not found and APPROVED, create a new Attendance record
+      // Create new attendance record if approved and not found
       if (!attendanceDoc && decision === "APPROVED") {
         const userId = request.user._id || request.user;
         attendanceDoc = await Attendance.create({
@@ -278,140 +517,157 @@ router.patch(
           workInTime: request.toWorkInTime || "",
           workOutTime: request.toWorkOutTime || "",
           note: request.note || "",
+          extraHoursWorked: request.extraHours || 0,
+          extraHoursApproved: decision === "APPROVED",
+          compOffDaysEarned: 0,
           isLeaveRequest: isLeaveStatus(request.toStatus),
-          extraWork:
-            request.toStatus === "COMPOFF" && request.extraWork
-              ? request.extraWork
-              : undefined,
+          extraWork: (request.toStatus === "COMPOFF" && request.extraWork)
+            ? request.extraWork
+            : undefined,
           managerDecision: {
-            status: "APPROVED",
-            decidedBy: req.user._id,
+            status: decision,
+            decidedBy: req.user.id,
             decidedAt: new Date(),
-            comment: request.note || ""
+            comment: comment || request.note || ""
           }
         });
       }
 
-      // ---- APPLY DECISION ON ATTENDANCE (if we have one) ----
+      // Apply decision to existing attendance record
       if (attendanceDoc) {
         if (decision === "APPROVED") {
-          if (request.toStatus) {
-            attendanceDoc.status = request.toStatus;
+          // Update status and other fields
+          attendanceDoc.status = request.toStatus;
+          attendanceDoc.workInTime = request.toWorkInTime || attendanceDoc.workInTime;
+          attendanceDoc.workOutTime = request.toWorkOutTime || attendanceDoc.workOutTime;
+          attendanceDoc.note = request.note || attendanceDoc.note;
+          attendanceDoc.isLeaveRequest = isLeaveStatus(request.toStatus);
+
+          // ✅ FIX 1: Handle extra hours and comp-off calculation
+          // DO NOT modify extraHoursWorked - keep daily hours intact
+          if (request.extraHours) {
+            const fullCompOffDays = Math.floor(request.extraHours / 8);
+
+            attendanceDoc.compOffDaysEarned =
+              (attendanceDoc.compOffDaysEarned || 0) + fullCompOffDays;
+
+            // ❗ DO NOT change extraHoursWorked here - it stays as daily worked hours
+            attendanceDoc.extraHoursApproved = true;
           }
 
           if (request.toStatus === "COMPOFF" && request.extraWork) {
             attendanceDoc.extraWork = request.extraWork;
-            attendanceDoc.isLeaveRequest = true;
-          } else if (isLeaveStatus(request.toStatus)) {
-            attendanceDoc.isLeaveRequest = true;
+            attendanceDoc.extraHoursApproved = true;
           }
 
-          attendanceDoc.managerDecision = {
-            status: "APPROVED",
-            decidedBy: req.user._id,
-            decidedAt: new Date(),
-            comment: request.note || ""
-          };
         } else if (decision === "REJECTED") {
-          attendanceDoc.managerDecision = {
-            status: "REJECTED",
-            decidedBy: req.user._id,
-            decidedAt: new Date(),
-            comment: request.note || ""
-          };
+          // Reset approval status but keep worked hours
+          if (request.extraHours) {
+            // Keep extraHoursWorked as is (they were actually worked)
+            // Only mark as not approved for comp-off
+            attendanceDoc.extraHoursApproved = false;
+          }
         }
 
+        // Update manager decision
+        attendanceDoc.managerDecision = {
+          status: decision,
+          decidedBy: req.user.id,
+          decidedAt: new Date(),
+          comment: comment || request.note || ""
+        };
+
         await attendanceDoc.save();
-      } else {
-        console.warn(
-          "Decision on attendance request: attendance not found and not created",
-          id
-        );
       }
 
-      // ---- UPDATE REQUEST ITSELF ----
-      request.status = decision; // no longer PENDING
-      request.decidedBy = req.user._id;
+      // Update request status
+      request.status = decision;
+      request.decidedBy = req.user.id;
       request.decisionAt = new Date();
       await request.save();
 
-      try {
-        await Log.create({
-          type: "OPERATION",
-          action: "ATTENDANCE_REQUEST_DECISION",
-          entity: "ATTENDANCE_REQUEST",
-          user: req.user.id,
-          userName: req.user.fullName,
-          userEmail: req.user.email,
-          role: req.user.role,
-          description: `Manager ${decision.toLowerCase()} attendance request on ${request.date} -> ${request.toStatus}`,
-          status: "SUCCESS",
-          ipAddress: getClientIp(req),
-          details: {
-            requestId: request._id,
-            decision,
-            date: request.date,
-            toStatus: request.toStatus
-          }
-        });
-      } catch (logErr) {
-        console.error("Log ATTENDANCE_REQUEST_DECISION error:", logErr.message);
-      }
+      // Log the decision
+      await createLog({
+        type: "OPERATION",
+        action: "ATTENDANCE_REQUEST_DECISION",
+        entity: "ATTENDANCE_REQUEST",
+        user: req.user.id,
+        userName: req.user.fullName,
+        userEmail: req.user.email,
+        role: req.user.role,
+        description: `Manager ${decision.toLowerCase()} attendance request on ${request.date} -> ${request.toStatus}`,
+        status: "SUCCESS",
+        ipAddress: getClientIp(req),
+        details: {
+          requestId: request._id,
+          decision,
+          date: request.date,
+          toStatus: request.toStatus,
+          employeeId: request.user._id,
+          employeeName: request.user.fullName
+        }
+      });
 
       return res.json({
         message: attendanceDoc
           ? "Decision applied successfully"
           : "Decision stored, but attendance record could not be created"
       });
+
     } catch (err) {
       console.error("Decision on attendance request error:", err);
-      return res
-        .status(400)
-        .json({ message: err.message || "Error applying decision" });
+      return res.status(400).json({ 
+        message: err.message || "Error applying decision" 
+      });
     }
   }
 );
 
 /* ------------------------ DELETE /api/attendance/:id ------------------------ */
-
+/**
+ * Delete attendance record (manager only)
+ */
 router.delete(
   "/:id",
   authMiddleware,
-  requireRole(["manager"]),
+  requireRole(["manager", "admin"]),
   async (req, res) => {
     try {
-      const record = await Attendance.findByIdAndDelete(req.params.id).populate(
-        "user",
-        "fullName email role"
-      );
+      const record = await Attendance.findByIdAndDelete(req.params.id)
+        .populate("user", "fullName email role department");
 
-      if (record) {
-        try {
-          await Log.create({
-            type: "OPERATION",
-            action: "ATTENDANCE_DELETE",
-            entity: "ATTENDANCE",
-            user: req.user.id,
-            userName: req.user.fullName,
-            userEmail: req.user.email,
-            role: req.user.role,
-            description: `Manager deleted attendance for ${
-              record.user?.fullName || "employee"
-            } on ${record.date}`,
-            status: "SUCCESS",
-            ipAddress: getClientIp(req),
-            details: {
-              attendanceId: record._id,
-              employeeId: record.user?._id,
-              employeeEmail: record.user?.email
-            }
-          });
-        } catch (logErr) {
-          console.error("Log ATTENDANCE_DELETE error:", logErr.message);
-        }
+      if (!record) {
+        return res.status(404).json({ message: "Attendance record not found" });
       }
 
-      res.json({ message: "Deleted" });
+      // Delete associated attendance requests
+      await AttendanceRequest.deleteMany({ attendance: record._id });
+
+      // Log the deletion
+      await createLog({
+        type: "OPERATION",
+        action: "ATTENDANCE_DELETE",
+        entity: "ATTENDANCE",
+        user: req.user.id,
+        userName: req.user.fullName,
+        userEmail: req.user.email,
+        role: req.user.role,
+        description: `Deleted attendance for ${record.user?.fullName || "employee"} on ${record.date}`,
+        status: "SUCCESS",
+        ipAddress: getClientIp(req),
+        details: {
+          attendanceId: record._id,
+          employeeId: record.user?._id,
+          employeeEmail: record.user?.email,
+          date: record.date
+        }
+      });
+
+      res.json({ 
+        message: "Attendance record deleted successfully",
+        deletedRecord: record
+      });
+
     } catch (err) {
       console.error("Delete attendance error:", err);
       res.status(500).json({ message: "Server error" });
