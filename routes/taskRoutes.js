@@ -8,7 +8,7 @@ const router = express.Router();
 // all task routes require login
 router.use(authMiddleware);
 
-// helper: manager/admin only (for admin view we also allow admin)
+// helper: manager/admin only
 const requireManager = requireRole(["manager", "admin"]);
 
 /**
@@ -44,31 +44,29 @@ router.post("/", async (req, res) => {
         ? recentRequirement
         : "Requirement not specified";
 
-    const isManager = req.user.role === "manager";
+    const isManager = req.user.role === "manager" || req.user.role === "admin";
 
     let finalAssignedUserId = assignedUserId;
-let finalHoursAllocated = Number(hoursAllocated || 0);
+    let finalHoursAllocated = Number(hoursAllocated || 0);
 
-// Employees can only assign task to themselves, and not allocate hours
-if (!isManager) {
-  finalAssignedUserId = req.user.id || req.user._id;
-  finalHoursAllocated = 0;
-}
+    // Employees: only assign to themselves
+    if (!isManager) {
+      finalAssignedUserId = req.user.id || req.user._id;
+    }
 
-const start = originalClosureDate || "";
-const end = estimatedDate || "";
+    const start = originalClosureDate || "";
+    const end = estimatedDate || "";
 
-// auto-calculate working days
-let workingDays = Number(noOfDays || 0);
-if (start && end) {
-  workingDays = await countWorkingDaysInRange(start, end);
-}
+    // auto-calculate working days
+    let workingDays = Number(noOfDays || 0);
+    if (start && end) {
+      workingDays = await countWorkingDaysInRange(start, end);
+    }
 
-// 🔧 AUTO HOURS FIX
-if (!finalHoursAllocated && workingDays > 0) {
-  finalHoursAllocated = workingDays * 8;
-}
-
+    // default hours = workingDays * 8 OR fallback 8
+    if (!finalHoursAllocated || finalHoursAllocated <= 0) {
+      finalHoursAllocated = workingDays > 0 ? workingDays * 8 : 8;
+    }
 
     const task = await Task.create({
       projectId,
@@ -96,32 +94,8 @@ if (!finalHoursAllocated && workingDays > 0) {
 });
 
 /**
- * GET /api/tasks/project/:projectId
- * Manager/Admin: all tasks for a project
- */
-router.get("/project/:projectId", requireManager, async (req, res) => {
-  try {
-    const { projectId } = req.params;
-
-    const tasks = await Task.find({ projectId })
-      .populate("assignedUserId", "fullName email")
-      .sort({ createdAt: 1 });
-
-    res.json(
-      tasks.map((t) => ({
-        ...t.toObject(),
-        assignedUser: t.assignedUserId
-      }))
-    );
-  } catch (err) {
-    console.error("Get project tasks error:", err);
-    res.status(500).json({ message: "Error fetching project tasks" });
-  }
-});
-
-/**
  * GET /api/tasks/my
- * Employee / Manager: tasks assigned to me (or created by me with no assignee)
+ * Employee / Manager: tasks assigned to me
  */
 router.get("/my", async (req, res) => {
   try {
@@ -150,58 +124,49 @@ router.get("/my", async (req, res) => {
 });
 
 /**
- * NEW: GET /api/tasks/all-admin
- * Manager/Admin: all project tasks across organisation (Admin uses this, view-only)
- */
-router.get("/all-admin", requireManager, async (req, res) => {
-  try {
-    const tasks = await Task.find({})
-      .populate("projectId", "name code description totalEstimatedHours")
-      .populate("assignedUserId", "fullName email")
-      .sort({ createdAt: 1 });
-
-    res.json(
-      tasks.map((t) => ({
-        ...t.toObject(),
-        project: t.projectId,
-        assignedUser: t.assignedUserId
-      }))
-    );
-  } catch (err) {
-    console.error("Get all tasks for admin error:", err);
-    res
-      .status(500)
-      .json({ message: "Error loading all project tasks for admin" });
-  }
-});
-
-/**
  * PATCH /api/tasks/:id
+ * Update task
  */
 router.patch("/:id", async (req, res) => {
   try {
     const isManager = req.user.role === "manager" || req.user.role === "admin";
     const userId = req.user.id || req.user._id;
 
-    // if both dates present in body, recalc working days
+    // recalc working days if dates changed
     if (req.body.originalClosureDate && req.body.estimatedDate) {
-      const start = req.body.originalClosureDate;
-      const end = req.body.estimatedDate;
-      req.body.noOfDays = await countWorkingDaysInRange(start, end); // FIXED: Added await
+      req.body.noOfDays = await countWorkingDaysInRange(
+        req.body.originalClosureDate,
+        req.body.estimatedDate
+      );
     }
 
-    // Manager/Admin can update whole task
+    // MANAGER / ADMIN → full update allowed
     if (isManager) {
-      const task = await Task.findByIdAndUpdate(req.params.id, req.body, {
+      const updates = { ...req.body };
+
+      if (updates.hoursAllocated !== undefined) {
+        updates.hoursAllocated =
+          Number(updates.hoursAllocated) > 0
+            ? Number(updates.hoursAllocated)
+            : 8;
+      }
+
+      const task = await Task.findByIdAndUpdate(req.params.id, updates, {
         new: true
       });
-      if (!task) return res.status(404).json({ message: "Task not found" });
+
+      if (!task) {
+        return res.status(404).json({ message: "Task not found" });
+      }
+
       return res.json(task);
     }
 
-    // Employee update: only if assigned to them, and only some fields
+    // EMPLOYEE UPDATE (restricted)
     const task = await Task.findById(req.params.id);
-    if (!task) return res.status(404).json({ message: "Task not found" });
+    if (!task) {
+      return res.status(404).json({ message: "Task not found" });
+    }
 
     if (String(task.assignedUserId) !== String(userId)) {
       return res.status(403).json({ message: "Forbidden" });
@@ -218,20 +183,30 @@ router.patch("/:id", async (req, res) => {
       "estimatedDate",
       "noOfDays",
       "clientPriority",
-      "prioritySource"
+      "prioritySource",
+      "hoursAllocated"
     ];
 
     const updates = {};
+
     Object.keys(req.body || {}).forEach((key) => {
       if (allowedForEmployee.includes(key)) {
-        updates[key] = req.body[key];
+        if (key === "hoursAllocated") {
+          updates.hoursAllocated =
+            Number(req.body.hoursAllocated) > 0
+              ? Number(req.body.hoursAllocated)
+              : task.hoursAllocated;
+        } else {
+          updates[key] = req.body[key];
+        }
       }
     });
 
-    const updated = await Task.findByIdAndUpdate(req.params.id, updates, {
+    const updatedTask = await Task.findByIdAndUpdate(req.params.id, updates, {
       new: true
     });
-    return res.json(updated);
+
+    res.json(updatedTask);
   } catch (err) {
     console.error("Update task error:", err);
     res.status(500).json({ message: "Error updating task" });
@@ -245,7 +220,9 @@ router.patch("/:id", async (req, res) => {
 router.delete("/:id", requireManager, async (req, res) => {
   try {
     const task = await Task.findByIdAndDelete(req.params.id);
-    if (!task) return res.status(404).json({ message: "Task not found" });
+    if (!task) {
+      return res.status(404).json({ message: "Task not found" });
+    }
     res.json({ message: "Task deleted" });
   } catch (err) {
     console.error("Delete task error:", err);
