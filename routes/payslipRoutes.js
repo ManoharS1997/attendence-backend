@@ -165,10 +165,7 @@ router.get("/:id/download", authMiddleware, async (req, res) => {
       NET PAYABLE AMOUNT ₹${payslip.netPay}
     </div>
 
-    <div class="sign">
-      <div>Employee Signature</div>
-      <div>Authorized Signatory</div>
-    </div>
+    
 
     <div class="footer">
       This is a system generated payslip and does not require signature.<br/>

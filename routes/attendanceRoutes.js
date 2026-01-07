@@ -455,10 +455,14 @@ router.get(
     try {
       const pending = await AttendanceRequest.find({ status: "PENDING" })
         .populate("user", "fullName email role department")
-        .populate("attendance")
-        .sort({ createdAt: 1 });
+  .populate("attendance")
+  .sort({ createdAt: 1 });
 
-      res.json(pending);
+// ✅ SAFETY FIX: remove broken requests with missing user
+const safePending = pending.filter(r => r.user);
+
+
+      res.json(safePending);
     } catch (err) {
       console.error("List attendance requests error:", err);
       res.status(500).json({ message: "Server error" });

@@ -27,6 +27,15 @@ const logSchema = new Schema(
     ipAddress: String,
 
     status: { type: String, default: "SUCCESS" },
+
+    // ✅ NEW FIELDS FOR AUTO ARCHIVAL
+    archived: {
+      type: Boolean,
+      default: false
+    },
+    archivedMonth: {
+      type: String // format: MM-YYYY (e.g. 01-2026)
+    }
   },
   { timestamps: true }
 );

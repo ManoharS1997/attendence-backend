@@ -3,6 +3,9 @@ import express from "express";
 import cors from "cors";
 import { connectDB } from "./config/db.js";
 
+// 🔁 Monthly auto log archival job
+import "./jobs/logArchiveJob.js";
+
 // Import all routes
 import authRoutes from "./routes/authRoutes.js";
 import attendanceRoutes from "./routes/attendanceRoutes.js";
@@ -16,6 +19,7 @@ import holidayRoutes from "./routes/holidayRoutes.js";
 import payslipRoutes from "./routes/payslipManagementRoutes.js";
 import bankRoutes from "./routes/bankRoutes.js";
 import utilityRoutes from "./routes/utilityRoutes.js";
+
 
 const app = express();
 const PORT = process.env.PORT || 5000;

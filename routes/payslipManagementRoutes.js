@@ -513,10 +513,6 @@ th { background:#f1f5f9; }
   <small>(${convertNumberToWords(payslip.salary.netPay)})</small>
 </div>
 
-<div class="sign">
-  <div>Employee Signature</div>
-  <div>Authorized Signatory</div>
-</div>
 
 <div class="footer">
   NOW IT SERVICES PVT LTD<br/>
