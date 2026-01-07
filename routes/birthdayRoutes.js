@@ -6,8 +6,10 @@ import { authMiddleware, requireRole } from "../middleware/auth.js";
 const router = express.Router();
 
 /**
+ * =========================================================
  * CREATE BIRTHDAY
  * POST /api/birthday
+ * =========================================================
  */
 router.post(
   "/",
@@ -44,7 +46,8 @@ router.post(
         dob,
         day: dd,
         month: mm,
-        year: yyyy
+        year: yyyy,
+        wished: false
       });
 
       res.json({ success: true, birthday });
@@ -56,13 +59,15 @@ router.post(
 );
 
 /**
+ * =========================================================
  * GET ALL BIRTHDAYS
  * GET /api/birthday
+ * =========================================================
  */
 router.get(
   "/",
   authMiddleware,
-  requireRole(["manager"]),
+  requireRole(["manager", "employee"]),
   async (req, res) => {
     try {
       const birthdays = await Birthday.find()
@@ -73,6 +78,79 @@ router.get(
     } catch (err) {
       console.error("Fetch birthdays error:", err);
       res.status(500).json({ message: "Failed to fetch birthdays" });
+    }
+  }
+);
+
+/**
+ * =========================================================
+ * DELETE BIRTHDAY
+ * DELETE /api/birthday/:id
+ * =========================================================
+ */
+router.delete(
+  "/:id",
+  authMiddleware,
+  requireRole(["manager"]),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const deleted = await Birthday.findByIdAndDelete(id);
+
+      if (!deleted) {
+        return res.status(404).json({ message: "Birthday not found" });
+      }
+
+      res.json({
+        success: true,
+        message: "Birthday deleted successfully"
+      });
+    } catch (err) {
+      console.error("Delete birthday error:", err);
+      res.status(500).json({ message: "Failed to delete birthday" });
+    }
+  }
+);
+
+/**
+ * =========================================================
+ * SEND BIRTHDAY WISH
+ * POST /api/birthday/:id/wish
+ * =========================================================
+ */
+router.post(
+  "/:id/wish",
+  authMiddleware,
+  requireRole(["manager"]),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const birthday = await Birthday.findById(id).populate(
+        "employee",
+        "fullName email"
+      );
+
+      if (!birthday) {
+        return res.status(404).json({
+          message: "Birthday record not found"
+        });
+      }
+
+      birthday.wished = true;
+      birthday.wishedAt = new Date();
+      birthday.wishedBy = req.user.fullName;
+
+      await birthday.save();
+
+      res.json({
+        success: true,
+        message: `Birthday wish sent to ${birthday.employee.fullName}`
+      });
+    } catch (err) {
+      console.error("Birthday wish error:", err);
+      res.status(500).json({ message: "Failed to send birthday wish" });
     }
   }
 );
