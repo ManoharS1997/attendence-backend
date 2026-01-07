@@ -2,36 +2,43 @@ import cron from "node-cron";
 import Log from "../models/Log.js";
 
 /**
- * Runs at 23:59 on the LAST day of every month
+ * Runs on last day of every month at 11:59 PM
+ * Archives previous month logs
  */
-cron.schedule("59 23 28-31 * *", async () => {
-  try {
-    const now = new Date();
+const logArchiveJob = () => {
+  cron.schedule("59 23 28-31 * *", async () => {
+    try {
+      const today = new Date();
 
-    // Check if today is actually the last day of the month
-    const tomorrow = new Date(now);
-    tomorrow.setDate(now.getDate() + 1);
+      // Only run on actual last day
+      const tomorrow = new Date(today);
+      tomorrow.setDate(today.getDate() + 1);
+      if (tomorrow.getDate() !== 1) return;
 
-    if (tomorrow.getMonth() !== now.getMonth()) {
-      const month = String(now.getMonth() + 1).padStart(2, "0");
-      const year = now.getFullYear();
-      const archiveKey = `${month}-${year}`;
+      const start = new Date(today.getFullYear(), today.getMonth(), 1);
+      const end = new Date(today.getFullYear(), today.getMonth() + 1, 1);
 
       const result = await Log.updateMany(
-        { archived: false },
+        {
+          createdAt: { $gte: start, $lt: end },
+          archived: { $ne: true }
+        },
         {
           $set: {
             archived: true,
-            archivedMonth: archiveKey
+            archivedMonth: today.getMonth() + 1,
+            archivedYear: today.getFullYear()
           }
         }
       );
 
       console.log(
-        `✅ Logs archived for ${archiveKey}. Count: ${result.modifiedCount}`
+        `📦 Archived ${result.modifiedCount} logs for ${today.getMonth() + 1}-${today.getFullYear()}`
       );
+    } catch (err) {
+      console.error("❌ Log archival job failed:", err);
     }
-  } catch (err) {
-    console.error("❌ Monthly log archival failed:", err.message);
-  }
-});
+  });
+};
+
+export default logArchiveJob;
