@@ -17,7 +17,7 @@ router.post(
   requireRole(["manager"]),
   async (req, res) => {
     try {
-      const { employeeId, dob } = req.body;
+      const { employeeId, dob, note } = req.body;
 
       if (!employeeId || !dob) {
         return res.status(400).json({
@@ -47,6 +47,7 @@ router.post(
         day: dd,
         month: mm,
         year: yyyy,
+        note,
         wished: false
       });
 
@@ -84,6 +85,52 @@ router.get(
 
 /**
  * =========================================================
+ * CHECK TODAY'S BIRTHDAY (EMPLOYEE LOGIN)
+ * GET /api/birthday/today
+ * =========================================================
+ */
+router.get(
+  "/today",
+  authMiddleware,
+  requireRole(["employee", "manager"]),
+  async (req, res) => {
+    try {
+      const userId = req.user._id || req.user.id;
+
+      const today = new Date();
+      const day = today.getDate();
+      const month = today.getMonth() + 1;
+
+      const birthday = await Birthday.findOne({
+        employee: userId,
+        day,
+        month
+      }).populate("employee", "fullName email");
+
+      if (!birthday) {
+        return res.json({ isBirthday: false });
+      }
+
+      res.json({
+        isBirthday: true,
+        birthday: {
+          id: birthday._id,
+          fullName: birthday.employee.fullName,
+          email: birthday.employee.email,
+          day: birthday.day,
+          month: birthday.month,
+          wished: birthday.wished
+        }
+      });
+    } catch (err) {
+      console.error("Birthday today check error:", err);
+      res.status(500).json({ message: "Failed to check birthday" });
+    }
+  }
+);
+
+/**
+ * =========================================================
  * DELETE BIRTHDAY
  * DELETE /api/birthday/:id
  * =========================================================
@@ -94,9 +141,7 @@ router.delete(
   requireRole(["manager"]),
   async (req, res) => {
     try {
-      const { id } = req.params;
-
-      const deleted = await Birthday.findByIdAndDelete(id);
+      const deleted = await Birthday.findByIdAndDelete(req.params.id);
 
       if (!deleted) {
         return res.status(404).json({ message: "Birthday not found" });
@@ -125,9 +170,7 @@ router.post(
   requireRole(["manager"]),
   async (req, res) => {
     try {
-      const { id } = req.params;
-
-      const birthday = await Birthday.findById(id).populate(
+      const birthday = await Birthday.findById(req.params.id).populate(
         "employee",
         "fullName email"
       );
