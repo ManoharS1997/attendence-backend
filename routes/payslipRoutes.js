@@ -6,12 +6,13 @@ import Payslip from "../models/Payslip.js";
 const router = express.Router();
 
 /**
- * DOWNLOAD PAYSLIP PDF (SINGLE & SAFE)
+ * DOWNLOAD PAYSLIP PDF (DOCKER + PRODUCTION SAFE)
  */
 router.get("/:id/download", authMiddleware, async (req, res) => {
+  let browser;
+
   try {
-    const payslip = await Payslip.findById(req.params.id)
-      .populate("employee");
+    const payslip = await Payslip.findById(req.params.id).populate("employee");
 
     if (!payslip) {
       return res.status(404).json({ message: "Payslip not found" });
@@ -20,14 +21,23 @@ router.get("/:id/download", authMiddleware, async (req, res) => {
     // Employee can download ONLY their own payslip
     if (
       req.user.role === "EMPLOYEE" &&
-      payslip.employee._id.toString() !== req.user.id
+      payslip.employee?._id?.toString() !== req.user.id
     ) {
       return res.status(403).json({ message: "Access denied" });
     }
 
-    const browser = await puppeteer.launch({
-      headless: "new",
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    // 🔥 Puppeteer launch (Docker safe)
+    browser = await puppeteer.launch({
+      headless: true,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--no-zygote",
+        "--single-process"
+      ],
     });
 
     const page = await browser.newPage();
@@ -40,7 +50,7 @@ router.get("/:id/download", authMiddleware, async (req, res) => {
   <title>Payslip</title>
   <style>
     body {
-      font-family: "Segoe UI", Arial, sans-serif;
+      font-family: Arial, sans-serif;
       background: #f4f7fb;
       padding: 24px;
     }
@@ -117,42 +127,29 @@ router.get("/:id/download", authMiddleware, async (req, res) => {
       text-align: center;
       color: #666;
     }
-    .sign {
-      display: flex;
-      justify-content: space-between;
-      margin-top: 50px;
-    }
-    .sign div {
-      width: 40%;
-      text-align: center;
-      border-top: 1px solid #333;
-      padding-top: 6px;
-      font-size: 13px;
-    }
   </style>
 </head>
-
 <body>
   <div class="payslip">
     <div class="header">
       <h1>NOW IT SERVICES PVT LTD</h1>
       <p>SALARY SLIP</p>
-      <p>For the month of ${payslip.month}/${payslip.year}</p>
+      <p>For the month of ${payslip.month ?? "-"} / ${payslip.year ?? "-"}</p>
     </div>
 
     <div class="info">
-      <div class="box"><strong>Name:</strong> ${payslip.employee?.fullName}</div>
-      <div class="box"><strong>Employee ID:</strong> ${payslip.employee?.employeeId}</div>
-      <div class="box"><strong>Email:</strong> ${payslip.employee?.email}</div>
+      <div class="box"><strong>Name:</strong> ${payslip.employee?.fullName || "Employee"}</div>
+      <div class="box"><strong>Employee ID:</strong> ${payslip.employee?.employeeId || "-"}</div>
+      <div class="box"><strong>Email:</strong> ${payslip.employee?.email || "-"}</div>
       <div class="box"><strong>Designation:</strong> ${payslip.employee?.designation || "Employee"}</div>
     </div>
 
     <table>
       <tr><th>Earnings</th><th>Amount (₹)</th></tr>
-      <tr><td>Basic Pay</td><td>${payslip.basicSalary}</td></tr>
+      <tr><td>Basic Pay</td><td>${payslip.basicSalary || 0}</td></tr>
       <tr><td>HRA</td><td>${payslip.hra || 0}</td></tr>
       <tr><td>Allowances</td><td>${payslip.allowances || 0}</td></tr>
-      <tr class="total"><td>Total Earnings</td><td>${payslip.grossSalary}</td></tr>
+      <tr class="total"><td>Total Earnings</td><td>${payslip.grossSalary || 0}</td></tr>
     </table>
 
     <table>
@@ -162,10 +159,8 @@ router.get("/:id/download", authMiddleware, async (req, res) => {
     </table>
 
     <div class="netpay">
-      NET PAYABLE AMOUNT ₹${payslip.netPay}
+      NET PAYABLE AMOUNT ₹${payslip.netPay || 0}
     </div>
-
-    
 
     <div class="footer">
       This is a system generated payslip and does not require signature.<br/>
@@ -188,13 +183,15 @@ router.get("/:id/download", authMiddleware, async (req, res) => {
 
     res.set({
       "Content-Type": "application/pdf",
-      "Content-Disposition": `attachment; filename="Payslip-${payslip.employee?.fullName}-${payslip.month}-${payslip.year}.pdf"`,
+      "Content-Disposition": `attachment; filename="Payslip-${payslip.employee?.fullName || "Employee"}-${payslip.month}-${payslip.year}.pdf"`,
       "Content-Length": pdfBuffer.length
     });
 
     return res.end(pdfBuffer);
+
   } catch (error) {
     console.error("Payslip download error:", error);
+    if (browser) await browser.close();
     return res.status(500).json({ message: "Failed to generate payslip PDF" });
   }
 });
