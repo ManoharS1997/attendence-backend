@@ -1,5 +1,5 @@
 # ✅ Lightweight Node with Chromium support
-FROM node:18-slim
+FROM node:20-slim
 
 # Install Chromium and required libraries
 RUN apt-get update && apt-get install -y \
