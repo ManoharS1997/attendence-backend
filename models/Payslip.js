@@ -16,7 +16,7 @@ const payslipSchema = new mongoose.Schema(
       index: true
     },
 
-    // Add job title to payslip
+    // ✅ ADD THIS (MISSING EARLIER)
     jobTitle: {
       type: String,
       required: true
@@ -26,6 +26,14 @@ const payslipSchema = new mongoose.Schema(
       type: String,
       required: true
     },
+
+    employeeType: {
+      type: String,
+      enum: ["Permanent", "Contract", "Intern", "Freelancer", "Consultant", "Temporary"],
+      required: true
+    },
+
+
 
     month: {
       type: Number,

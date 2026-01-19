@@ -1,17 +1,40 @@
 // routes/taskRoutes.js
 import express from "express";
 import Task from "../models/Task.js";
-import { authMiddleware, requireRole } from "../middleware/auth.js";
+import { authMiddleware } from "../middleware/auth.js";
 import { countWorkingDaysInRange } from "../utils/holidays.js";
 
 const router = express.Router();
 
+// 🔐 Apply auth middleware
 router.use(authMiddleware);
 
-const requireManager = requireRole(["manager", "admin"]);
+/**
+ * 🔐 Permission checker for task edit
+ */
+const canEditTask = (user, task) => {
+  // Admin → view only
+  if (user.role === "admin") return false;
+
+  // Manager-created task → editable ONLY by assigned employee
+  if (task.createdByRole === "manager") {
+    return (
+      user.role === "employee" &&
+      task.assignedUserId?.toString() === user._id.toString()
+    );
+  }
+
+  // Employee-created task → editable ONLY by manager
+  if (task.createdByRole === "employee") {
+    return user.role === "manager";
+  }
+
+  // Admin-created task → no edits
+  return false;
+};
 
 /**
- * CREATE TASK
+ * ✅ CREATE TASK
  */
 router.post("/", async (req, res) => {
   try {
@@ -38,11 +61,10 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ message: "projectId is required" });
     }
 
-    let finalAssignedUserId = assignedUserId || null;
-
-    if (!isManager) {
-      finalAssignedUserId = req.user._id;
-    }
+    // Employees can assign task only to themselves
+    const finalAssignedUserId = isManager
+      ? assignedUserId || null
+      : req.user._id;
 
     let workingDays = 0;
     if (originalClosureDate && estimatedDate) {
@@ -81,15 +103,15 @@ router.post("/", async (req, res) => {
 });
 
 /**
- * MY TASKS
+ * 👁️ MY TASKS
+ * - Employee → only assigned tasks
+ * - Manager/Admin → all tasks
  */
 router.get("/my", async (req, res) => {
   try {
-    const userId = req.user._id;
-
     const query =
       req.user.role === "employee"
-        ? { assignedUserId: userId }
+        ? { assignedUserId: req.user._id }
         : {};
 
     const tasks = await Task.find(query)
@@ -104,44 +126,45 @@ router.get("/my", async (req, res) => {
 });
 
 /**
- * PROJECT TASKS
+ * 👁️ PROJECT TASKS
  */
 router.get("/project/:projectId", async (req, res) => {
-  const { projectId } = req.params;
+  try {
+    const { projectId } = req.params;
 
-  const query =
-    req.user.role === "employee"
-      ? { projectId, assignedUserId: req.user._id }
-      : { projectId };
+    const query =
+      req.user.role === "employee"
+        ? { projectId, assignedUserId: req.user._id }
+        : { projectId };
 
-  const tasks = await Task.find(query)
-    .populate("assignedUserId", "fullName email")
-    .sort({ createdAt: -1 });
+    const tasks = await Task.find(query)
+      .populate("assignedUserId", "fullName email")
+      .sort({ createdAt: -1 });
 
-  res.json(tasks);
+    res.json(tasks);
+  } catch (err) {
+    res.status(500).json({ message: "Error fetching project tasks" });
+  }
 });
 
 /**
- * UPDATE TASK
+ * ✏️ UPDATE TASK (STRICT RULES)
  */
 router.patch("/:id", async (req, res) => {
   try {
-    const isManager =
-      req.user.role === "manager" || req.user.role === "admin";
-
     const task = await Task.findById(req.params.id);
     if (!task) {
       return res.status(404).json({ message: "Task not found" });
     }
 
-    if (
-      !isManager &&
-      task.assignedUserId?.toString() !== req.user._id.toString() &&
-      task.createdByUserId.toString() !== req.user._id.toString()
-    ) {
-      return res.status(403).json({ message: "Forbidden" });
+    // 🔐 Permission enforcement
+    if (!canEditTask(req.user, task)) {
+      return res.status(403).json({
+        message: "You do not have permission to edit this task"
+      });
     }
 
+    // Recalculate working days if dates change
     if (req.body.originalClosureDate && req.body.estimatedDate) {
       req.body.noOfDays = await countWorkingDaysInRange(
         req.body.originalClosureDate,
@@ -170,11 +193,13 @@ router.patch("/:id", async (req, res) => {
 });
 
 /**
- * DELETE TASK
+ * ❌ DELETE TASK
+ * Permanently disabled as per requirement
  */
-router.delete("/:id", requireManager, async (req, res) => {
-  await Task.findByIdAndDelete(req.params.id);
-  res.json({ message: "Task deleted" });
+router.delete("/:id", (req, res) => {
+  res.status(403).json({
+    message: "Task deletion is not allowed"
+  });
 });
 
 export default router;

@@ -29,7 +29,7 @@ const formatCurrency = (amount) => {
 
 const convertNumberToWords = (num) => {
   if (num === 0) return 'Zero Rupees';
-  
+
   const a = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten',
     'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
   const b = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
@@ -71,13 +71,13 @@ const convertNumberToWords = (num) => {
 router.get("/check/:employeeId/:month/:year", authMiddleware, async (req, res) => {
   try {
     const { employeeId, month, year } = req.params;
-    
+
     const existingPayslip = await Payslip.findOne({
       employee: employeeId,
       month: parseInt(month),
       year: parseInt(year)
     });
-    
+
     res.json({
       exists: !!existingPayslip,
       payslip: existingPayslip
@@ -110,20 +110,28 @@ router.post("/", authMiddleware, requireRole(["manager", "admin"]), async (req, 
 
     // Check if employee exists and get details
     const employee = await User.findById(employeeId);
+
+    console.log("EMPLOYEE FROM DB:", {
+      id: employee._id,
+      jobTitle: employee.jobTitle,
+      employeeType: employee.employeeType || "Permanent",
+
+    });
+
     if (!employee) {
-      return res.status(404).json({ 
-        message: "Employee not found" 
+      return res.status(404).json({
+        message: "Employee not found"
       });
     }
 
     // Get bank details from BankDetails model
-    const bankDetails = await BankDetails.findOne({ 
-      employee: employeeId 
+    const bankDetails = await BankDetails.findOne({
+      employee: employeeId
     });
-    
+
     if (!bankDetails) {
-      return res.status(400).json({ 
-        message: "Bank details not found for employee. Please add bank details first." 
+      return res.status(400).json({
+        message: "Bank details not found for employee. Please add bank details first."
       });
     }
 
@@ -150,6 +158,12 @@ router.post("/", authMiddleware, requireRole(["manager", "admin"]), async (req, 
       month: parseInt(month),
       year: parseInt(year)
     });
+    // ✅ ALWAYS take latest values from User (single source of truth)
+    const latestDesignation =
+      employee.designation || employee.jobTitle || "Employee";
+
+    const latestEmployeeType =
+      employee.employeeType || "Permanent";
 
     let payslip;
     if (existingPayslip) {
@@ -168,21 +182,31 @@ router.post("/", authMiddleware, requireRole(["manager", "admin"]), async (req, 
         branch: bankDetails.branch,
         accountType: bankDetails.accountType
       };
-      existingPayslip.jobTitle = employee.jobTitle;
+      existingPayslip.designation =
+        employee.designation || employee.jobTitle || "Employee";
+
+      existingPayslip.employeeType =
+        employee.employeeType || "Permanent";
+
       existingPayslip.version += 1;
       existingPayslip.updatedAt = new Date();
-      
+
       payslip = await existingPayslip.save();
     } else {
       // Create new payslip
       payslip = await Payslip.create({
         employee: employeeId,
         employeeId: employee.employeeId,
-        jobTitle: employee.jobTitle,
-        designation: employee.designation || employee.jobTitle,
+
+
+        designation: employee.designation || employee.jobTitle || "N/A",
+        employeeType: employee.employeeType || "Permanent",
+
+
         month: parseInt(month),
         year: parseInt(year),
         workingDays: parseInt(workingDays),
+
         bankSnapshot: {
           bankName: bankDetails.bankName,
           accountNumber: bankDetails.accountNumber,
@@ -190,16 +214,19 @@ router.post("/", authMiddleware, requireRole(["manager", "admin"]), async (req, 
           branch: bankDetails.branch,
           accountType: bankDetails.accountType
         },
+
         salary: {
           ...salary,
           gross,
           deductions,
           netPay
         },
+
         status: "generated",
         createdBy: req.user.id,
         createdByName: req.user.fullName
       });
+
     }
 
     // Log the operation
@@ -239,7 +266,7 @@ router.post("/", authMiddleware, requireRole(["manager", "admin"]), async (req, 
     }
 
     console.error("❌ Generate payslip error:", err);
-    
+
     // Log error
     await Log.create({
       type: "ERROR",
@@ -254,7 +281,7 @@ router.post("/", authMiddleware, requireRole(["manager", "admin"]), async (req, 
       ipAddress: getClientIp(req),
       details: { errorMessage: err.message }
     });
-    
+
     return res.status(500).json({
       message: "Failed to generate payslip"
     });
@@ -324,11 +351,11 @@ router.post("/:id/send", authMiddleware, requireRole(["manager", "admin"]), asyn
 ===================================================== */
 router.get("/my", authMiddleware, async (req, res) => {
   try {
-    const payslips = await Payslip.find({ 
-      employee: req.user.id 
+    const payslips = await Payslip.find({
+      employee: req.user.id
     })
-    .sort({ year: -1, month: -1 })
-    .lean();
+      .sort({ year: -1, month: -1 })
+      .lean();
 
     // Format response
     const formattedPayslips = payslips.map(payslip => ({
@@ -351,14 +378,14 @@ router.get("/my", authMiddleware, async (req, res) => {
 router.get("/", authMiddleware, requireRole(["manager", "admin"]), async (req, res) => {
   try {
     const { month, year, employeeId, status } = req.query;
-    
+
     const filter = {};
-    
+
     if (month) filter.month = parseInt(month);
     if (year) filter.year = parseInt(year);
     if (employeeId) filter.employee = employeeId;
     if (status) filter.status = status;
-    
+
     const payslips = await Payslip.find(filter)
       .populate("employee", "fullName email jobTitle employeeId")
       .sort({ year: -1, month: -1, createdAt: -1 })
@@ -387,15 +414,15 @@ router.get("/:id/download", authMiddleware, async (req, res) => {
 
     // Check if employee is downloading their own payslip
     if (req.user.role === "employee" && req.user.id !== payslip.employee._id.toString()) {
-      return res.status(403).json({ 
-        message: "You can only download your own payslip" 
+      return res.status(403).json({
+        message: "You can only download your own payslip"
       });
     }
 
     /* ================= LOGO ================= */
     const logoPath = path.join(__dirname, "../assets/company-logo.jpg");
     let logoSrc = "";
-    
+
     if (fs.existsSync(logoPath)) {
       const logoBase64 = fs.readFileSync(logoPath, "base64");
       logoSrc = `data:image/jpeg;base64,${logoBase64}`;
@@ -460,12 +487,14 @@ th { background:#f1f5f9; }
 </tr>
 <tr>
   <th>Email</th><td>${payslip.employee.email}</td>
-  <th>Job Title</th><td>${payslip.jobTitle}</td>
+  <th>Designation</th>
+<td>${payslip.employee.designation || "N/A"}</td>
 </tr>
 <tr>
   <th>Working Days</th><td>${payslip.workingDays} days</td>
-  <th>Employee Type</th><td>Permanent</td>
-</tr>
+  <th>Employee status</th>
+<td>${payslip.employee.status || "N/A"}</td>
+
 </table>
 
 <div class="section">Bank Details</div>
@@ -548,7 +577,7 @@ th { background:#f1f5f9; }
       payslip.downloadedByEmployeeAt = new Date();
       payslip.status = "downloaded";
       await payslip.save();
-      
+
       // Log the download
       await Log.create({
         type: "OPERATION",
@@ -581,7 +610,7 @@ th { background:#f1f5f9; }
   } catch (err) {
     if (browser) await browser.close();
     console.error("❌ PDF error:", err);
-    
+
     // Log error
     await Log.create({
       type: "ERROR",
@@ -596,7 +625,7 @@ th { background:#f1f5f9; }
       ipAddress: getClientIp(req),
       details: { errorMessage: err.message }
     });
-    
+
     res.status(500).json({ message: "PDF generation failed" });
   }
 });
@@ -616,8 +645,8 @@ router.get("/:id", authMiddleware, async (req, res) => {
 
     // Check permissions
     if (req.user.role === "employee" && req.user.id !== payslip.employee._id.toString()) {
-      return res.status(403).json({ 
-        message: "You can only view your own payslip" 
+      return res.status(403).json({
+        message: "You can only view your own payslip"
       });
     }
 

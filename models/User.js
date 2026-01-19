@@ -37,6 +37,22 @@ const userSchema = new mongoose.Schema(
       default: "Employee"
     },
 
+    // ✅ Employee Type (Permanent / Contract / Intern etc.)
+employeeType: {
+  type: String,
+  enum: [
+    "Permanent",
+    "Contract",
+    "Intern",
+    "Freelancer",
+    "Consultant",
+    "Temporary"
+  ],
+  default: "Permanent"
+},
+
+
+
     // NEW: Job Title/Designation with all IT and non-IT roles
     jobTitle: {
       type: String,
