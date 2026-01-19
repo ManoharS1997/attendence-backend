@@ -7,7 +7,7 @@ import { connectDB } from "./config/db.js";
 import logArchiveJob from "./jobs/logArchiveJob.js";
 import birthdayReminderJob from "./jobs/birthdayReminderJob.js";
 
-// Import routes
+// ===================== ROUTES =====================
 import authRoutes from "./routes/authRoutes.js";
 import attendanceRoutes from "./routes/attendanceRoutes.js";
 import employeeRoutes from "./routes/employeeRoutes.js";
@@ -20,12 +20,12 @@ import holidayRoutes from "./routes/holidayRoutes.js";
 import payslipRoutes from "./routes/payslipManagementRoutes.js";
 import bankRoutes from "./routes/bankRoutes.js";
 import utilityRoutes from "./routes/utilityRoutes.js";
-import birthdayRoutes from "./routes/birthdayRoutes.js"; // ✅ ADDED
+import birthdayRoutes from "./routes/birthdayRoutes.js";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// ===================== CORS =====================
+// ===================== CORS CONFIG =====================
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:4173",
@@ -52,6 +52,11 @@ app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 
 // ===================== HEALTH CHECK =====================
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "UP" });
+});
+
+// ===================== ROOT =====================
 app.get("/", (req, res) => {
   res.send("🚀 Attendance & Payslip API running");
 });
@@ -69,9 +74,9 @@ app.use("/api/holidays", holidayRoutes);
 app.use("/api/payslips", payslipRoutes);
 app.use("/api/bank", bankRoutes);
 app.use("/api/utils", utilityRoutes);
-app.use("/api/birthday", birthdayRoutes); // ✅ FIXED
+app.use("/api/birthday", birthdayRoutes);
 
-// ===================== GLOBAL ERROR =====================
+// ===================== GLOBAL ERROR HANDLER =====================
 app.use((err, req, res, next) => {
   console.error("🔥 Global error:", err);
   res.status(500).json({
@@ -84,6 +89,7 @@ async function startServer() {
   try {
     await connectDB();
 
+    // Start background jobs
     logArchiveJob();
     birthdayReminderJob();
 
