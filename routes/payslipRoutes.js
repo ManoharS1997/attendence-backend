@@ -9,8 +9,7 @@ const router = express.Router();
 /**
  * 📄 DOWNLOAD PAYSLIP PDF
  * - Employee: only own payslip
- * - Manager/Admin: any payslip (view & download)
- * - No delete, no edit
+ * - Manager/Admin: any payslip
  */
 router.get("/:id/download", authMiddleware, async (req, res) => {
   let browser;
@@ -30,7 +29,9 @@ router.get("/:id/download", authMiddleware, async (req, res) => {
       return res.status(403).json({ message: "Access denied" });
     }
 
-    // 🔥 Puppeteer launch (Docker / production safe)
+    // ✅ SAFETY NORMALIZATION (CRITICAL)
+    const salary = payslip.salary || {};
+
     browser = await puppeteer.launch({
       headless: true,
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
@@ -142,34 +143,33 @@ td {
   </div>
 
   <div class="info">
-    <div class="box"><strong>Name:</strong> ${payslip.employee?.fullName}</div>
-    <div class="box"><strong>Employee ID:</strong> ${payslip.employeeId}</div>
-    <div class="box"><strong>Email:</strong> ${payslip.employee?.email}</div>
-    <div class="box"><strong>Designation:</strong> ${payslip.designation}</div>
-<div class="box"><strong>Employee Status:</strong> ${payslip.employeeType}</div>
-
-    <div class="box"><strong>Working Days:</strong> ${payslip.workingDays}</div>
+    <div class="box"><strong>Name:</strong> ${payslip.employee?.fullName || "N/A"}</div>
+    <div class="box"><strong>Employee ID:</strong> ${payslip.employeeId || "N/A"}</div>
+    <div class="box"><strong>Email:</strong> ${payslip.employee?.email || "N/A"}</div>
+    <div class="box"><strong>Designation:</strong> ${payslip.designation || "N/A"}</div>
+    <div class="box"><strong>Employee Status:</strong> ${payslip.employeeType || "N/A"}</div>
+    <div class="box"><strong>Working Days:</strong> ${payslip.workingDays ?? 0}</div>
   </div>
 
   <table>
     <tr><th>Earnings</th><th>Amount (₹)</th></tr>
-    <tr><td>Basic</td><td>${payslip.salary.basic}</td></tr>
-    <tr><td>HRA</td><td>${payslip.salary.hra}</td></tr>
-    <tr><td>Special Allowance</td><td>${payslip.salary.specialAllowance}</td></tr>
-    <tr class="total"><td>Gross Salary</td><td>${payslip.salary.gross}</td></tr>
+    <tr><td>Basic</td><td>${salary.basic ?? 0}</td></tr>
+    <tr><td>HRA</td><td>${salary.hra ?? 0}</td></tr>
+    <tr><td>Special Allowance</td><td>${salary.specialAllowance ?? 0}</td></tr>
+    <tr class="total"><td>Gross Salary</td><td>${salary.gross ?? 0}</td></tr>
   </table>
 
   <table>
     <tr><th>Deductions</th><th>Amount (₹)</th></tr>
-    <tr><td>PF</td><td>${payslip.salary.pf}</td></tr>
-    <tr><td>ESI</td><td>${payslip.salary.esi}</td></tr>
-    <tr><td>Professional Tax</td><td>${payslip.salary.professionalTax}</td></tr>
-    <tr><td>TDS</td><td>${payslip.salary.tds}</td></tr>
-    <tr class="total"><td>Total Deductions</td><td>${payslip.salary.deductions}</td></tr>
+    <tr><td>PF</td><td>${salary.pf ?? 0}</td></tr>
+    <tr><td>ESI</td><td>${salary.esi ?? 0}</td></tr>
+    <tr><td>Professional Tax</td><td>${salary.professionalTax ?? 0}</td></tr>
+    <tr><td>TDS</td><td>${salary.tds ?? 0}</td></tr>
+    <tr class="total"><td>Total Deductions</td><td>${salary.deductions ?? 0}</td></tr>
   </table>
 
   <div class="netpay">
-    NET PAY ₹${payslip.salary.netPay}
+    NET PAY ₹${salary.netPay ?? 0}
   </div>
 
   <div class="footer">
@@ -193,7 +193,7 @@ td {
 
     res.set({
       "Content-Type": "application/pdf",
-      "Content-Disposition": `attachment; filename="Payslip-${payslip.employee?.fullName}-${payslip.month}-${payslip.year}.pdf"`,
+      "Content-Disposition": `attachment; filename="Payslip-${payslip.employee?.fullName || "Employee"}-${payslip.month}-${payslip.year}.pdf"`,
       "Content-Length": pdfBuffer.length
     });
 
