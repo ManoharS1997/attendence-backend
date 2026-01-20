@@ -29,8 +29,15 @@ router.get("/:id/download", authMiddleware, async (req, res) => {
       return res.status(403).json({ message: "Access denied" });
     }
 
-    // ✅ SAFETY NORMALIZATION (CRITICAL)
+    // ✅ NORMALIZE DATA (CRITICAL FIX)
     const salary = payslip.salary || {};
+
+    // ✅ FALLBACK LOGIC (THIS FIXES THE ISSUE)
+    const designation =
+      payslip.designation || payslip.employee?.designation || "N/A";
+
+    const employeeType =
+      payslip.employeeType || payslip.employee?.employeeType || "N/A";
 
     browser = await puppeteer.launch({
       headless: true,
@@ -105,12 +112,10 @@ th {
   background: #2563eb;
   color: #fff;
   padding: 10px;
-  font-size: 14px;
 }
 td {
   border: 1px solid #dbeafe;
   padding: 8px;
-  font-size: 14px;
 }
 .total {
   font-weight: bold;
@@ -146,8 +151,8 @@ td {
     <div class="box"><strong>Name:</strong> ${payslip.employee?.fullName || "N/A"}</div>
     <div class="box"><strong>Employee ID:</strong> ${payslip.employeeId || "N/A"}</div>
     <div class="box"><strong>Email:</strong> ${payslip.employee?.email || "N/A"}</div>
-    <div class="box"><strong>Designation:</strong> ${payslip.designation || "N/A"}</div>
-    <div class="box"><strong>Employee Status:</strong> ${payslip.employeeType || "N/A"}</div>
+    <div class="box"><strong>Designation:</strong> ${designation}</div>
+    <div class="box"><strong>Employee Status:</strong> ${employeeType}</div>
     <div class="box"><strong>Working Days:</strong> ${payslip.workingDays ?? 0}</div>
   </div>
 
