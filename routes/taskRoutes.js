@@ -13,25 +13,36 @@ router.use(authMiddleware);
  * 🔐 Permission checker for task edit
  */
 const canEditTask = (user, task) => {
-  // Admin → view only
-  if (user.role === "admin") return false;
-
-  // Manager-created task → editable ONLY by assigned employee
-  if (task.createdByRole === "manager") {
-    return (
-      user.role === "employee" &&
-      task.assignedUserId?.toString() === user._id.toString()
-    );
+  // Employee → can edit ONLY tasks created by self
+  if (
+    user.role === "employee" &&
+    task.createdByRole === "employee" &&
+    task.createdByUserId.toString() === user._id.toString()
+  ) {
+    return true;
   }
 
-  // Employee-created task → editable ONLY by manager
-  if (task.createdByRole === "employee") {
-    return user.role === "manager";
+  // Manager → can edit ALL employee-created tasks
+  if (
+    user.role === "manager" &&
+    task.createdByRole === "employee"
+  ) {
+    return true;
   }
 
-  // Admin-created task → no edits
+  // Manager → can edit tasks created by manager
+  if (
+    user.role === "manager" &&
+    task.createdByRole === "manager"
+  ) {
+    return true;
+  }
+
+  // Admin → VIEW ONLY
   return false;
 };
+
+
 
 /**
  * ✅ CREATE TASK
@@ -115,9 +126,11 @@ router.get("/my", async (req, res) => {
         : {};
 
     const tasks = await Task.find(query)
-      .populate("projectId", "name code")
-      .populate("assignedUserId", "fullName email")
-      .sort({ createdAt: -1 });
+  .populate("projectId", "name code")
+  .populate("assignedUserId", "fullName email")
+  .populate("createdByUserId", "fullName email role")
+  .sort({ createdAt: -1 });
+
 
     res.json(tasks);
   } catch (err) {
@@ -137,9 +150,11 @@ router.get("/project/:projectId", async (req, res) => {
         ? { projectId, assignedUserId: req.user._id }
         : { projectId };
 
-    const tasks = await Task.find(query)
-      .populate("assignedUserId", "fullName email")
-      .sort({ createdAt: -1 });
+   const tasks = await Task.find(query)
+  .populate("assignedUserId", "fullName email")
+  .populate("createdByUserId", "fullName email role")
+  .sort({ createdAt: -1 });
+
 
     res.json(tasks);
   } catch (err) {
