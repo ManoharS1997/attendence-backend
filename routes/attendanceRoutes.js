@@ -10,6 +10,15 @@ const router = express.Router();
 /* ======================== HELPER FUNCTIONS ======================== */
 
 /**
+ * Convert time string to minutes
+ */
+const toMinutes = (time) => {
+  if (!time) return null;
+  const [h, m] = time.split(":").map(Number);
+  return h * 60 + m;
+};
+
+/**
  * Get client IP address from request headers
  */
 const getClientIp = (req) => {
@@ -91,6 +100,11 @@ const createLog = async (logData) => {
   }
 };
 
+// Constants from first router
+const OFFICE_START_MIN = 10 * 60; // 10:00
+const OFFICE_END_MIN = 18 * 60;   // 18:00
+const DAILY_WORK_MIN = 8 * 60;    // 8 hours
+
 /* ======================== ROUTES ======================== */
 
 /* ------------------------ POST /api/attendance ------------------------ */
@@ -101,11 +115,20 @@ const createLog = async (logData) => {
  */
 router.post("/", authMiddleware, async (req, res) => {
   try {
-    const { date, status, workInTime, workOutTime, note, extraWork } = req.body;
+    const {
+      date,
+      status,
+      workInTime,
+      workOutTime,
+      lunchBreakMinutes = 0,
+      halfDayType,
+      note,
+      extraWork
+    } = req.body;
 
     // Validate required fields
     if (!date || !status) {
-      return res.status(400).json({ message: "Date and status are required" });
+      return res.status(400).json({ message: "Date and status required" });
     }
 
     const existing = await Attendance.findOne({
@@ -113,56 +136,92 @@ router.post("/", authMiddleware, async (req, res) => {
       date
     });
 
+    // Check if attendance is locked
+    if (existing?.isLocked) {
+      return res.status(403).json({
+        message: "Attendance locked after manager approval"
+      });
+    }
+
     const isToday = date === todayString();
     const leaveLike = isLeaveStatus(status);
-    
-    // Calculate extra hours if present full day
-    const extraHoursWorked = (workInTime && workOutTime)
-      ? calculateExtraHours(workInTime, workOutTime)
-      : 0;
 
-    // 1) Auto-approve same-day present full day (no existing record)
-    if (!existing && isToday && !leaveLike && status === "PRESENT FULL DAY") {
-      const payload = {
+    // Calculate worked minutes with office timings logic from first router
+    let workedMinutes = 0;
+    let lateMinutes = 0;
+    let earlyLeaveMinutes = 0;
+    let extraHoursWorked = 0;
+
+    if (workInTime && workOutTime) {
+      const inMin = toMinutes(workInTime);
+      const outMin = toMinutes(workOutTime);
+
+      if (inMin !== null && outMin !== null) {
+        workedMinutes = outMin - inMin - lunchBreakMinutes;
+
+        if (inMin > OFFICE_START_MIN) {
+          lateMinutes = inMin - OFFICE_START_MIN;
+          workedMinutes -= lateMinutes;
+        }
+
+        if (outMin < OFFICE_END_MIN) {
+          earlyLeaveMinutes = OFFICE_END_MIN - outMin;
+          workedMinutes -= earlyLeaveMinutes;
+        }
+
+        if (workedMinutes < 0) workedMinutes = 0;
+
+        // Calculate extra hours using second router's logic
+        extraHoursWorked = calculateExtraHours(workInTime, workOutTime);
+      }
+    }
+
+    const hoursWorked = Math.min(8, Math.floor(workedMinutes / 60));
+
+    // Auto approve only SAME DAY full day present (first router's logic)
+    if (
+      !existing &&
+      isToday &&
+      status === "PRESENT FULL DAY" &&
+      hoursWorked === 8
+    ) {
+      const record = await Attendance.create({
         user: req.user.id,
         date,
         status,
-        workInTime: workInTime || "",
-        workOutTime: workOutTime || "",
-        note: note || "",
+        workInTime,
+        workOutTime,
+        lunchBreakMinutes,
+        lateMinutes,
+        earlyLeaveMinutes,
+        hoursWorked: 8,
         extraHoursWorked,
         extraHoursApproved: false,
         compOffDaysEarned: 0,
         isLeaveRequest: false,
+        note,
         managerDecision: {
           status: "APPROVED",
           decidedBy: req.user.id,
           decidedAt: new Date(),
           comment: "Self-marked present full day (auto-approved)"
         }
-      };
+      });
 
-      const record = await Attendance.create(payload);
-
-      // Auto-create extra hours request if extra hours worked
-      if (extraHoursWorked > 0) {
+      // Extra hours need approval for comp-off (first router's logic)
+      if (extraHoursWorked >= 1) {
         await AttendanceRequest.create({
           user: req.user.id,
           attendance: record._id,
           date,
           type: "UPDATE",
-          fromStatus: "PRESENT FULL DAY",
-          toStatus: "COMPOFF",
+          toStatus: "EXTRA_HOURS",
           extraHours: extraHoursWorked,
-          note: `Auto extra hours request for ${extraHoursWorked} hrs`,
           status: "PENDING"
         });
-
-        record.isLeaveRequest = true;
-        await record.save();
       }
 
-      // Log the action
+      // Log the action (second router's logic)
       await createLog({
         type: "OPERATION",
         action: "MARK_ATTENDANCE",
@@ -177,13 +236,13 @@ router.post("/", authMiddleware, async (req, res) => {
         details: { date, status, extraHoursWorked }
       });
 
-      return res.status(201).json({
-        message: "Attendance saved",
-        record
+      return res.json({ 
+        message: "Attendance marked", 
+        record 
       });
     }
 
-    // 2) All other cases require approval
+    // All other cases → manager approval
     const requestPayload = {
       user: req.user.id,
       date,
@@ -191,18 +250,24 @@ router.post("/", authMiddleware, async (req, res) => {
       toStatus: status,
       toWorkInTime: workInTime || "",
       toWorkOutTime: workOutTime || "",
+      lunchBreakMinutes,
+      halfDayType,
       note: note || "",
+      calculated: {
+        hoursWorked,
+        extraHoursWorked,
+        lateMinutes,
+        earlyLeaveMinutes
+      },
       status: "PENDING"
     };
 
     if (existing) {
       requestPayload.attendance = existing._id;
       requestPayload.fromStatus = existing.status;
-      requestPayload.fromWorkInTime = existing.workInTime;
-      requestPayload.fromWorkOutTime = existing.workOutTime;
     }
 
-    // Handle extra hours or comp-off
+    // Handle extra hours or comp-off (second router's logic)
     if (status === "COMPOFF") {
       requestPayload.extraWork = extraWork || null;
     } else if (status === "PRESENT FULL DAY" && extraHoursWorked > 0) {
@@ -232,11 +297,10 @@ router.post("/", authMiddleware, async (req, res) => {
       }
     });
 
-    return res.status(202).json({
-      message: "Attendance/leave change sent to Manager for approval",
+    res.status(202).json({
+      message: "Request sent for manager approval",
       requestId: requestDoc._id
     });
-
   } catch (err) {
     console.error("Save attendance error:", err);
     await createLog({
@@ -455,12 +519,11 @@ router.get(
     try {
       const pending = await AttendanceRequest.find({ status: "PENDING" })
         .populate("user", "fullName email role department")
-  .populate("attendance")
-  .sort({ createdAt: 1 });
+        .populate("attendance")
+        .sort({ createdAt: 1 });
 
-// ✅ SAFETY FIX: remove broken requests with missing user
-const safePending = pending.filter(r => r.user);
-
+      // ✅ SAFETY FIX: remove broken requests with missing user
+      const safePending = pending.filter(r => r.user);
 
       res.json(safePending);
     } catch (err) {
@@ -474,6 +537,7 @@ const safePending = pending.filter(r => r.user);
 /**
  * Manager approves/rejects an attendance request
  * ✅ FIX 1: DO NOT MODIFY daily extra hours during approval
+ * ✅ FIX 2: COMP-OFF CREDIT rule from first router
  */
 router.patch(
   "/requests/:id/decision",
@@ -520,11 +584,16 @@ router.patch(
           status: request.toStatus,
           workInTime: request.toWorkInTime || "",
           workOutTime: request.toWorkOutTime || "",
+          lunchBreakMinutes: request.lunchBreakMinutes || 0,
+          lateMinutes: request.calculated?.lateMinutes || 0,
+          earlyLeaveMinutes: request.calculated?.earlyLeaveMinutes || 0,
+          hoursWorked: Math.min(8, request.calculated?.hoursWorked || 0),
           note: request.note || "",
           extraHoursWorked: request.extraHours || 0,
           extraHoursApproved: decision === "APPROVED",
           compOffDaysEarned: 0,
           isLeaveRequest: isLeaveStatus(request.toStatus),
+          halfDayType: request.halfDayType || null,
           extraWork: (request.toStatus === "COMPOFF" && request.extraWork)
             ? request.extraWork
             : undefined,
@@ -544,7 +613,9 @@ router.patch(
           attendanceDoc.status = request.toStatus;
           attendanceDoc.workInTime = request.toWorkInTime || attendanceDoc.workInTime;
           attendanceDoc.workOutTime = request.toWorkOutTime || attendanceDoc.workOutTime;
+          attendanceDoc.lunchBreakMinutes = request.lunchBreakMinutes || attendanceDoc.lunchBreakMinutes;
           attendanceDoc.note = request.note || attendanceDoc.note;
+          attendanceDoc.halfDayType = request.halfDayType || attendanceDoc.halfDayType;
           attendanceDoc.isLeaveRequest = isLeaveStatus(request.toStatus);
 
           // ✅ FIX 1: Handle extra hours and comp-off calculation
@@ -564,6 +635,24 @@ router.patch(
             attendanceDoc.extraHoursApproved = true;
           }
 
+          // ✅ COMP-OFF CREDIT RULE from first router
+          if (
+            request.calculated?.extraHoursWorked >= 1 &&
+            request.toStatus === "PRESENT FULL DAY"
+          ) {
+            await User.findByIdAndUpdate(request.user._id, {
+              $inc: { compOffBalance: 1 }
+            });
+          }
+
+          // 🔐 LOCK for half day & leave (from first router)
+          if (
+            request.toStatus === "PRESENT HALF DAY" ||
+            isLeaveStatus(request.toStatus)
+          ) {
+            attendanceDoc.isLocked = true;
+          }
+
         } else if (decision === "REJECTED") {
           // Reset approval status but keep worked hours
           if (request.extraHours) {
@@ -571,6 +660,13 @@ router.patch(
             // Only mark as not approved for comp-off
             attendanceDoc.extraHoursApproved = false;
           }
+        }
+
+        // Update calculated fields if available
+        if (request.calculated) {
+          attendanceDoc.lateMinutes = request.calculated.lateMinutes || attendanceDoc.lateMinutes;
+          attendanceDoc.earlyLeaveMinutes = request.calculated.earlyLeaveMinutes || attendanceDoc.earlyLeaveMinutes;
+          attendanceDoc.hoursWorked = Math.min(8, request.calculated.hoursWorked || 0);
         }
 
         // Update manager decision

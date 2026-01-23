@@ -3,51 +3,35 @@ import mongoose from "mongoose";
 const { Schema } = mongoose;
 
 /**
- * All allowed attendance statuses.
- * Make sure this list matches what your frontend uses.
+ * Allowed attendance statuses
  */
 export const ATTENDANCE_STATUS = [
   "PRESENT FULL DAY",
   "PRESENT HALF DAY",
-  "EMERGENCY LEAVE",
   "CASUAL LEAVE",
+  "EMERGENCY LEAVE",
+  "SICK LEAVE",
   "PUBLIC HOLIDAY",
-  "2ND SATURDAY",
   "SUNDAY",
-  "Half Day - Fun Thursday",
-  "Half Day - Development",
+  "2ND SATURDAY",
   "COMPOFF",
-  "PRESENT",
-  "ABSENT",
-  "SICK LEAVE"
+  "ABSENT"
 ];
 
 /**
- * Extra work details for COMPOFF.
- * Example:
- *  - workedDate: "07-12-2025"
- *  - workedTime: "18:00"
- *  - hours: 6
- *  - compOffDate: "10-12-2025"
- *  - compOffTime: "10:00"
+ * Extra work details (used for comp-off reference)
  */
 const extraWorkSchema = new Schema(
   {
-    workedDate: { type: String }, // dd-mm-yyyy (e.g. Sunday worked date)
-    workedTime: { type: String }, // e.g. "18:00"
-    hours: { type: Number },      // extra hours worked
-    compOffDate: { type: String }, // dd-mm-yyyy (when comp-off is taken)
-    compOffTime: { type: String }  // e.g. "10:00"
+    workedDate: { type: String },      // dd-mm-yyyy
+    workedHours: { type: Number },     // actual extra hours (>= 1 for comp-off)
+    approved: { type: Boolean, default: false }
   },
   { _id: false }
 );
 
 /**
- * Manager decision for attendance / leave / comp-off
- * status:
- *  - PENDING
- *  - APPROVED
- *  - REJECTED
+ * Manager approval schema
  */
 const managerDecisionSchema = new Schema(
   {
@@ -64,21 +48,15 @@ const managerDecisionSchema = new Schema(
       type: Date
     },
     comment: {
-      type: String
+      type: String,
+      default: ""
     }
   },
   { _id: false }
 );
 
 /**
- * Main Attendance schema
- * This matches what your EmployeeDashboard / ManagerDashboard are sending:
- *  - date: "dd-mm-yyyy"
- *  - status: from ATTENDANCE_STATUS
- *  - workInTime / workOutTime: "HH:mm"
- *  - note: optional
- *  - isLeaveRequest: true for leave / comp-off requests
- *  - extraWork: for COMPOFF
+ * Attendance schema
  */
 const attendanceSchema = new Schema(
   {
@@ -88,61 +66,110 @@ const attendanceSchema = new Schema(
       required: true
     },
 
-    // dd-mm-yyyy (e.g. "09-12-2025")
+    // dd-mm-yyyy
     date: {
       type: String,
       required: true
     },
 
-    // e.g. "PRESENT FULL DAY", "Half Day - Development", "COMPOFF"
     status: {
       type: String,
       enum: ATTENDANCE_STATUS,
       required: true
     },
 
-    // "10:00"
-    workInTime: {
-      type: String,
-      default: ""
+    // Work timing
+    workInTime: { type: String, default: "" },   // HH:mm
+    workOutTime: { type: String, default: "" },  // HH:mm
+
+    /**
+     * SYSTEM CALCULATED VALUES
+     */
+
+    // Lunch break in minutes (30 or 60)
+    lunchBreakMinutes: {
+      type: Number,
+      default: 0
     },
 
-    // "18:00"
-    workOutTime: {
-      type: String,
-      default: ""
+    // Late coming minutes (10:10 -> 10 mins)
+    lateMinutes: {
+      type: Number,
+      default: 0
     },
 
-    note: {
-      type: String,
-      default: ""
+    // Early leaving minutes
+    earlyLeaveMinutes: {
+      type: Number,
+      default: 0
     },
 
-    // true if this entry is a leave / comp-off request needing manager approval
-    isLeaveRequest: {
-      type: Boolean,
-      default: false
+    /**
+     * FINAL HOURS WORKED
+     * IMPORTANT RULE:
+     * - MAX = 8 hours
+     * - Never increases beyond 8
+     */
+    hoursWorked: {
+      type: Number,
+      default: 0,
+      max: 8
     },
 
-    // NEW: Track extra hours worked
+    /**
+     * Extra hours worked (only for comp-off eligibility)
+     * Does NOT affect hoursWorked
+     */
     extraHoursWorked: {
       type: Number,
       default: 0
     },
 
-    // NEW: Track if extra hours approved for comp-off
+    // Extra hours approved by manager
     extraHoursApproved: {
       type: Boolean,
       default: false
     },
 
-    // For COMPOFF status only
+    /**
+     * Half Day Details
+     * Used only when status = PRESENT HALF DAY
+     */
+    halfDayType: {
+      type: String,
+      enum: ["FUN", "DEVELOPMENT", "PERSONAL"],
+      default: null
+    },
+
+    /**
+     * Attendance lock
+     * Once manager approves half day / leave
+     * attendance becomes immutable
+     */
+    isLocked: {
+      type: Boolean,
+      default: false
+    },
+
+    /**
+     * Extra work reference (Sunday / Holiday / Late stay)
+     */
     extraWork: extraWorkSchema,
 
-    // Manager's decision (PENDING / APPROVED / REJECTED)
+    /**
+     * Manager approval
+     */
     managerDecision: {
       type: managerDecisionSchema,
       default: () => ({ status: "PENDING" })
+    },
+
+    /**
+     * Notes / reason
+     */
+    note: {
+      type: String,
+      default: ""
     }
   },
   {
@@ -150,9 +177,10 @@ const attendanceSchema = new Schema(
   }
 );
 
-// Add index for faster queries
+/**
+ * Indexes
+ */
 attendanceSchema.index({ user: 1, date: 1 }, { unique: true });
-attendanceSchema.index({ user: 1, month: 1, year: 1 });
 attendanceSchema.index({ date: 1 });
 
 const Attendance = mongoose.model("Attendance", attendanceSchema);

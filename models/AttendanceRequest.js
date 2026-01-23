@@ -4,24 +4,21 @@ import mongoose from "mongoose";
 const { Schema } = mongoose;
 
 /**
- * Extra work details for COMPOFF.
- * Keep it aligned with models/Attendance.js extraWorkSchema.
+ * Extra work details
+ * Used only for approval reference (does NOT grant comp-off by itself)
  */
 const extraWorkSchema = new Schema(
   {
-    workedDate: { type: String },   // dd-mm-yyyy – the day extra work was done
-    workedTime: { type: String },   // e.g. "18:00"
-    hours: { type: Number },        // number of extra hours
-    compOffDate: { type: String },  // dd-mm-yyyy – when comp-off will be taken
-    compOffTime: { type: String }   // e.g. "10:00"
+    workedDate: { type: String },      // dd-mm-yyyy
+    workedHours: { type: Number },     // actual extra hours (>=1 eligible)
+    reason: { type: String, default: "" }
   },
   { _id: false }
 );
 
 /**
  * AttendanceRequest
- * Created whenever an employee posts attendance that needs manager approval
- * (non-simple cases, leaves, comp-offs, backdated/future dates, etc.)
+ * One request = one manager decision
  */
 const attendanceRequestSchema = new Schema(
   {
@@ -31,7 +28,7 @@ const attendanceRequestSchema = new Schema(
       required: true
     },
 
-    // optional reference to an existing Attendance document
+    // Linked attendance record (optional for CREATE)
     attendance: {
       type: Schema.Types.ObjectId,
       ref: "Attendance"
@@ -43,20 +40,26 @@ const attendanceRequestSchema = new Schema(
       required: true
     },
 
-    // "CREATE" – no Attendance existed for that date
-    // "UPDATE" – modify an existing Attendance
+    /**
+     * CREATE  → no attendance existed
+     * UPDATE  → modifying existing attendance
+     */
     type: {
       type: String,
       enum: ["CREATE", "UPDATE"],
       required: true
     },
 
-    // current values (for UPDATE)
+    /**
+     * Existing values (for audit)
+     */
     fromStatus: { type: String },
     fromWorkInTime: { type: String },
     fromWorkOutTime: { type: String },
 
-    // requested values (for CREATE / UPDATE)
+    /**
+     * Requested values
+     */
     toStatus: {
       type: String,
       required: true
@@ -64,17 +67,41 @@ const attendanceRequestSchema = new Schema(
     toWorkInTime: { type: String },
     toWorkOutTime: { type: String },
 
-    // COMPOFF details if applicable
-    extraWork: extraWorkSchema,
-
-    // optional note from employee
-    note: { type: String },
+    /**
+     * System-calculated values (read-only intent)
+     * Used by manager decision logic
+     */
+    calculated: {
+      hoursWorked: { type: Number, default: 0 },       // capped at 8
+      extraHoursWorked: { type: Number, default: 0 },  // for comp-off check
+      lateMinutes: { type: Number, default: 0 },
+      earlyLeaveMinutes: { type: Number, default: 0 }
+    },
 
     /**
-     * Request status:
-     *  - PENDING   – waiting for manager decision
-     *  - APPROVED  – manager approved and Attendance has been updated/created
-     *  - REJECTED  – manager rejected, Attendance not changed
+     * Half day purpose (only if toStatus = PRESENT HALF DAY)
+     */
+    halfDayType: {
+      type: String,
+      enum: ["FUN", "DEVELOPMENT", "PERSONAL"],
+      default: null
+    },
+
+    /**
+     * Extra work reference (approval only)
+     */
+    extraWork: extraWorkSchema,
+
+    /**
+     * Optional employee note / reason
+     */
+    note: {
+      type: String,
+      default: ""
+    },
+
+    /**
+     * Request status
      */
     status: {
       type: String,
@@ -82,7 +109,9 @@ const attendanceRequestSchema = new Schema(
       default: "PENDING"
     },
 
-    // Who decided & when
+    /**
+     * Manager decision
+     */
     decidedBy: {
       type: Schema.Types.ObjectId,
       ref: "User"
@@ -95,6 +124,9 @@ const attendanceRequestSchema = new Schema(
     timestamps: true
   }
 );
+
+attendanceRequestSchema.index({ user: 1, date: 1 });
+attendanceRequestSchema.index({ status: 1 });
 
 const AttendanceRequest = mongoose.model(
   "AttendanceRequest",

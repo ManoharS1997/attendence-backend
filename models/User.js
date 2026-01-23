@@ -37,27 +37,25 @@ const userSchema = new mongoose.Schema(
       default: "Employee"
     },
 
-    // ✅ Employee Type (Permanent / Contract / Intern etc.)
-employeeType: {
-  type: String,
-  enum: [
-    "Permanent",
-    "Contract",
-    "Intern",
-    "Freelancer",
-    "Consultant",
-    "Temporary"
-  ],
-  default: "Permanent"
-},
+    /* ================= EMPLOYEE TYPE ================= */
+    employeeType: {
+      type: String,
+      enum: [
+        "Permanent",
+        "Contract",
+        "Intern",
+        "Freelancer",
+        "Consultant",
+        "Temporary"
+      ],
+      default: "Permanent"
+    },
 
-
-
-    // NEW: Job Title/Designation with all IT and non-IT roles
+    /* ================= JOB TITLE ================= */
     jobTitle: {
       type: String,
       enum: [
-        // IT Job Titles
+        // IT
         "Software Engineer",
         "Senior Software Engineer",
         "Software Development Engineer",
@@ -118,8 +116,8 @@ employeeType: {
         "VP of Engineering",
         "Software Architect",
         "Engineering Manager",
-        
-        // Non-IT Job Titles
+
+        // Non-IT
         "HR Manager",
         "HR Executive",
         "Recruiter",
@@ -129,7 +127,7 @@ employeeType: {
         "HR Coordinator",
         "Training & Development Manager",
         "Compensation & Benefits Analyst",
-        
+
         "Finance Manager",
         "Accountant",
         "Chartered Accountant",
@@ -143,7 +141,7 @@ employeeType: {
         "Cost Accountant",
         "Financial Controller",
         "CFO",
-        
+
         "Marketing Manager",
         "Digital Marketing Specialist",
         "SEO Specialist",
@@ -154,7 +152,7 @@ employeeType: {
         "Marketing Executive",
         "Marketing Analyst",
         "Public Relations Officer",
-        
+
         "Sales Manager",
         "Sales Executive",
         "Business Development Manager",
@@ -163,7 +161,7 @@ employeeType: {
         "Sales Consultant",
         "Customer Success Manager",
         "Inside Sales Representative",
-        
+
         "Operations Manager",
         "Operations Executive",
         "Supply Chain Manager",
@@ -171,25 +169,25 @@ employeeType: {
         "Warehouse Manager",
         "Production Manager",
         "Quality Control Manager",
-        
+
         "Administration Manager",
         "Administrative Assistant",
         "Executive Assistant",
         "Office Manager",
         "Receptionist",
-        
+
         "Legal Counsel",
         "Legal Advisor",
         "Compliance Officer",
         "Company Secretary",
-        
+
         "CEO",
         "Managing Director",
         "Director",
         "General Manager",
         "Assistant Manager",
         "Department Head",
-        
+
         "Intern",
         "Trainee",
         "Fresher",
@@ -204,7 +202,38 @@ employeeType: {
       default: "Software Engineer"
     },
 
-    // Leave configuration fields
+    /* ================= LEAVE BALANCES ================= */
+
+    // Casual Leave balance
+    casualLeaveBalance: {
+      type: Number,
+      default: 12
+    },
+
+    // Emergency leave balance
+    emergencyLeaveBalance: {
+      type: Number,
+      default: 4
+    },
+
+    // Sick leave balance
+    sickLeaveBalance: {
+      type: Number,
+      default: 6
+    },
+
+    /**
+     * Comp-off balance
+     * RULE:
+     * +1 only when manager approves extra work on a full day
+     */
+    compOffBalance: {
+      type: Number,
+      default: 0
+    },
+
+    /* ================= LEAVE CONFIG ================= */
+
     totalLeaveEntitlement: {
       type: Number,
       default: 16
@@ -224,6 +253,8 @@ employeeType: {
       type: Number,
       default: 0
     },
+
+    /* ================= SYSTEM FLAGS ================= */
 
     mustChangePassword: {
       type: Boolean,
