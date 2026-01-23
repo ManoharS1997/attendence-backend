@@ -19,19 +19,19 @@ export const ATTENDANCE_STATUS = [
 ];
 
 /**
- * Extra work details (used for comp-off reference)
+ * Extra work details (for Comp-Off reference only)
  */
 const extraWorkSchema = new Schema(
   {
-    workedDate: { type: String },      // dd-mm-yyyy
-    workedHours: { type: Number },     // actual extra hours (>= 1 for comp-off)
+    workedDate: { type: String },     // dd-mm-yyyy
+    workedMinutes: { type: Number },  // actual extra minutes worked
     approved: { type: Boolean, default: false }
   },
   { _id: false }
 );
 
 /**
- * Manager approval schema
+ * Manager decision schema
  */
 const managerDecisionSchema = new Schema(
   {
@@ -44,19 +44,14 @@ const managerDecisionSchema = new Schema(
       type: Schema.Types.ObjectId,
       ref: "User"
     },
-    decidedAt: {
-      type: Date
-    },
-    comment: {
-      type: String,
-      default: ""
-    }
+    decidedAt: { type: Date },
+    comment: { type: String, default: "" }
   },
   { _id: false }
 );
 
 /**
- * Attendance schema
+ * Attendance schema (MINUTE ACCURATE)
  */
 const attendanceSchema = new Schema(
   {
@@ -78,62 +73,67 @@ const attendanceSchema = new Schema(
       required: true
     },
 
-    // Work timing
+    /**
+     * Work timings
+     */
     workInTime: { type: String, default: "" },   // HH:mm
     workOutTime: { type: String, default: "" },  // HH:mm
 
     /**
-     * SYSTEM CALCULATED VALUES
+     * Minute-accurate system fields
      */
-
-    // Lunch break in minutes (30 or 60)
-    lunchBreakMinutes: {
+    totalWorkedMinutes: {
       type: Number,
       default: 0
     },
 
-    // Late coming minutes (10:10 -> 10 mins)
+    lunchBreakMinutes: {
+      type: Number,
+      default: 0   // 0 / 30 / 60
+    },
+
     lateMinutes: {
       type: Number,
       default: 0
     },
 
-    // Early leaving minutes
     earlyLeaveMinutes: {
       type: Number,
       default: 0
     },
 
     /**
-     * FINAL HOURS WORKED
-     * IMPORTANT RULE:
-     * - MAX = 8 hours
-     * - Never increases beyond 8
+     * FINAL PAYABLE WORK MINUTES
+     * RULES:
+     * - Max = 480 minutes (8 hours)
+     * - Never rounded
      */
-    hoursWorked: {
+    payableMinutes: {
       type: Number,
       default: 0,
-      max: 8
+      max: 480
     },
 
     /**
-     * Extra hours worked (only for comp-off eligibility)
-     * Does NOT affect hoursWorked
+     * Derived hours (for UI display only)
+     * Example: 125 mins → 2.08 hrs
      */
-    extraHoursWorked: {
+    hoursWorked: {
       type: Number,
       default: 0
     },
 
-    // Extra hours approved by manager
-    extraHoursApproved: {
-      type: Boolean,
-      default: false
+    /**
+     * Extra minutes (beyond 8 hours)
+     * Used ONLY for comp-off eligibility
+     */
+    extraMinutesWorked: {
+      type: Number,
+      default: 0
     },
 
     /**
-     * Half Day Details
-     * Used only when status = PRESENT HALF DAY
+     * Half-day classification
      */
     halfDayType: {
       type: String,
@@ -142,9 +142,7 @@ const attendanceSchema = new Schema(
     },
 
     /**
-     * Attendance lock
-     * Once manager approves half day / leave
-     * attendance becomes immutable
+     * Lock attendance once manager approves
      */
     isLocked: {
       type: Boolean,
@@ -165,7 +163,7 @@ const attendanceSchema = new Schema(
     },
 
     /**
-     * Notes / reason
+     * Notes
      */
     note: {
       type: String,
