@@ -77,11 +77,7 @@ router.get("/check/:employeeId/:month/:year", authMiddleware, async (req, res) =
       month: parseInt(month),
       year: parseInt(year)
     });
-    // ✅ AUTO DELETE OLD PAYSLIP BEFORE REGENERATE
-if (existingPayslip) {
-  await Payslip.deleteOne({ _id: existingPayslip._id });
-}
-
+ 
 
     res.json({
       exists: !!existingPayslip,
@@ -163,12 +159,7 @@ router.post("/", authMiddleware, requireRole(["manager", "admin"]), async (req, 
       month: parseInt(month),
       year: parseInt(year)
     });
-    // ✅ ALWAYS take latest values from User (single source of truth)
-    const latestDesignation =
-      employee.designation || employee.jobTitle || "Employee";
-
-    const latestEmployeeType =
-      employee.employeeType || "Permanent";
+    
 
     let payslip;
     if (existingPayslip) {
@@ -187,11 +178,9 @@ router.post("/", authMiddleware, requireRole(["manager", "admin"]), async (req, 
         branch: bankDetails.branch,
         accountType: bankDetails.accountType
       };
-      existingPayslip.designation =
-        employee.designation || employee.jobTitle || "Employee";
+      existingPayslip.designation = req.body.designation;
 
-      existingPayslip.employeeType =
-        employee.employeeType || "Permanent";
+      existingPayslip.employeeType = req.body.employeeType;
 
       existingPayslip.version += 1;
       existingPayslip.updatedAt = new Date();
@@ -204,8 +193,8 @@ router.post("/", authMiddleware, requireRole(["manager", "admin"]), async (req, 
         employeeId: employee.employeeId,
 
 
-        designation: employee.designation || employee.jobTitle || "N/A",
-        employeeType: employee.employeeType || "Permanent",
+        designation: req.body.designation,
+        employeeType: req.body.employeeType,
 
 
         month: parseInt(month),
@@ -493,12 +482,12 @@ th { background:#f1f5f9; }
 <tr>
   <th>Email</th><td>${payslip.employee.email}</td>
   <th>Designation</th>
-<td>${payslip.employee.designation || "N/A"}</td>
+<td>${payslip.designation || "N/A"}</td>
 </tr>
 <tr>
   <th>Working Days</th><td>${payslip.workingDays} days</td>
-  <th>Employee status</th>
-<td>${payslip.employee.status || "N/A"}</td>
+  <th>Employee Status</th>
+<td>${payslip.employeeType || "N/A"}</td>
 
 </table>
 

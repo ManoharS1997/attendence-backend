@@ -28,10 +28,24 @@ const payslipSchema = new mongoose.Schema(
     },
 
     employeeType: {
-      type: String,
-      enum: ["Permanent", "Contract", "Intern", "Freelancer", "Consultant", "Temporary"],
-      default: "Permanent"
-    },
+  type: String,
+  enum: [
+    "Permanent",
+    "Probation",
+    "Contract",
+    "Temporary",
+    "Intern",
+    "Freelancer",
+    "Consultant",
+    "Active",
+    "On Leave",
+    "Inactive",
+    "Resigned",
+    "Terminated"
+  ],
+  required: true
+},
+
 
     month: {
       type: Number,
