@@ -3,78 +3,121 @@ import mongoose from "mongoose";
 
 const { Schema } = mongoose;
 
+/**
+ * Task Schema
+ * - ONLY approved task hours reduce project balance
+ * - Attendance is NOT used here
+ */
 const taskSchema = new Schema(
   {
+    /* ===========================
+       PROJECT & USER REFERENCES
+       =========================== */
     projectId: {
       type: Schema.Types.ObjectId,
       ref: "Project",
-      required: true
+      required: true,
     },
 
     assignedUserId: {
       type: Schema.Types.ObjectId,
       ref: "User",
-      default: null
+      required: true,
     },
 
     createdByUserId: {
       type: Schema.Types.ObjectId,
       ref: "User",
-      required: true
+      required: true,
     },
 
-    createdByRole: {
+    /* ===========================
+       ROLE & PHASE CONTROL
+       =========================== */
+    role: {
       type: String,
-      enum: ["admin", "manager", "employee"],
-      required: true
+      required: true,
+      enum: [
+        "DEVELOPER",
+        "DEVOPS",
+        "QA",
+        "TESTER",
+        "PRODUCT_MANAGER",
+        "TECH_LEAD",
+      ],
     },
 
-    recentRequirement: {
+    phase: {
       type: String,
-      default: "Requirement not specified"
+      required: true,
+      enum: ["DEVELOPMENT", "DEPLOYMENT", "TESTING", "REVIEW"],
+    },
+
+    /* ===========================
+       TASK DETAILS
+       =========================== */
+    title: {
+      type: String,
+      required: true,
+    },
+
+    description: {
+      type: String,
+      default: "",
     },
 
     requirementType: {
       type: String,
       enum: ["NEW", "OLD", "BUG"],
-      default: "NEW"
+      default: "NEW",
     },
 
     status: {
       type: String,
-      default: "OPEN"
+      enum: ["OPEN", "IN_PROGRESS", "COMPLETED"],
+      default: "OPEN",
     },
 
-    scope: {
-      type: String,
-      enum: ["AGREED", "NOT_AGREED"],
-      default: "AGREED"
-    },
-
-    notes: { type: String, default: "" },
-
-    discussedDate: { type: String, default: "" },
-    originalClosureDate: { type: String, default: "" },
-    estimatedDate: { type: String, default: "" },
-
-    noOfDays: { type: Number, default: 0 },
-
-    estimateHours: {
+    /* ===========================
+       HOURS & DATE (CORE LOGIC)
+       =========================== */
+    hoursWorked: {
       type: Number,
-      default: 8
+      required: true,
+      min: 0,
     },
 
-    clientPriority: {
-      type: String,
-      enum: ["P1", "P2", "P3", "P4"],
-      default: "P3"
+    workDate: {
+      type: Date,
+      required: true,
     },
 
-    prioritySource: {
+    /* ===========================
+       MANAGER APPROVAL
+       =========================== */
+    approvedByManager: {
+      type: Boolean,
+      default: false,
+    },
+
+    approvedBy: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+
+    approvedAt: {
+      type: Date,
+      default: null,
+    },
+
+    /* ===========================
+       OPTIONAL NOTES
+       =========================== */
+    notes: {
       type: String,
-      enum: ["CLIENT", "SERVICE_PROVIDER", "THIRD_PARTY"],
-      default: "CLIENT"
-    }
+      default: "",
+    },
   },
   { timestamps: true }
 );

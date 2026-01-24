@@ -1,12 +1,17 @@
 // routes/projectRoutes.js
 import express from "express";
 import Project from "../models/Project.js";
+import Task from "../models/Task.js";
 import User from "../models/User.js";
-import { authMiddleware, requireRole } from "../middleware/auth.js";
 import Log from "../models/Log.js";
+import { authMiddleware, requireRole } from "../middleware/auth.js";
 import { countWorkingDaysInRange, calculateDurationMonths } from "../utils/holidays.js";
 
 const router = express.Router();
+
+/* =====================================================
+   HELPERS
+   ===================================================== */
 
 const getClientIp = (req) => {
   const xff = req.headers["x-forwarded-for"];
@@ -18,20 +23,83 @@ const getClientIp = (req) => {
 
 const getAssignmentUserIdString = (assignment) => {
   if (!assignment.user) return "";
-  // handles both ObjectId and populated user document
   if (assignment.user._id) return assignment.user._id.toString();
   return assignment.user.toString();
 };
 
 /**
- * POST /api/projects
- * Manager creates a new project with start/end dates
- * Auto-calculates working days excluding:
- * - Sundays
- * - 2nd Saturdays
- * - Mandatory Public Holidays
- * - Optional Holidays marked as TAKEN
+ * Calculate project hours from approved tasks only (for legacy task system)
  */
+const calculateProjectHoursFromTasks = async (project) => {
+  const tasks = await Task.find({
+    projectId: project._id,
+    approvedByManager: true,
+    workDate: {
+      $gte: project.startDate,
+      $lte: project.endDate,
+    },
+  });
+
+  const roleBreakdown = {};
+  let totalUsedHours = 0;
+
+  for (const task of tasks) {
+    totalUsedHours += task.hoursWorked || 0;
+
+    if (task.role) {
+      if (!roleBreakdown[task.role]) {
+        roleBreakdown[task.role] = 0;
+      }
+      roleBreakdown[task.role] += task.hoursWorked || 0;
+    }
+  }
+
+  const remainingHours = project.totalEstimatedHours - totalUsedHours;
+
+  return {
+    totalEstimatedHours: project.totalEstimatedHours,
+    totalUsedHours,
+    remainingHours,
+    roleBreakdown,
+  };
+};
+
+/**
+ * Calculate project hours from estimated hours (for new task system)
+ */
+const calculateProjectHoursFromEstimates = async (project) => {
+  const tasks = await Task.find({
+    projectId: project._id,
+    approvedByManager: true,
+  });
+
+  let totalUsedHours = 0;
+  const roleBreakdown = {};
+
+  for (const task of tasks) {
+    totalUsedHours += task.estimateHours || 0;
+    
+    // For new system, you might want to track by requirementType or status
+    const key = task.requirementType || 'UNCATEGORIZED';
+    if (!roleBreakdown[key]) {
+      roleBreakdown[key] = 0;
+    }
+    roleBreakdown[key] += task.estimateHours || 0;
+  }
+
+  const remainingHours = project.totalEstimatedHours - totalUsedHours;
+
+  return {
+    totalEstimatedHours: project.totalEstimatedHours,
+    totalUsedHours,
+    remainingHours,
+    roleBreakdown,
+  };
+};
+
+/* =====================================================
+   CREATE PROJECT WITH AUTO-CALCULATION
+   ===================================================== */
 router.post(
   "/",
   authMiddleware,
@@ -42,10 +110,12 @@ router.post(
         name,
         code,
         description,
-        startDate,    // "DD-MM-YYYY"
-        endDate,      // "DD-MM-YYYY"
+        startDate,          // "DD-MM-YYYY" or ISO string
+        endDate,            // "DD-MM-YYYY" or ISO string
         totalEstimatedHours, // Can be overridden by manager
         durationMonths,      // Can be overridden by manager
+        currentPhase = "PLANNING",
+        status = "ACTIVE",
       } = req.body;
 
       // Validate required fields
@@ -55,12 +125,19 @@ router.post(
         });
       }
 
-      // Parse dates for validation
+      // Parse dates
       const parseDate = (dateStr) => {
         if (!dateStr) return null;
-        const [dd, mm, yyyy] = dateStr.split("-").map((p) => parseInt(p, 10));
-        if (!dd || !mm || !yyyy) return null;
-        return new Date(yyyy, mm - 1, dd);
+        
+        // Try DD-MM-YYYY format
+        if (dateStr.includes('-') && dateStr.split('-').length === 3) {
+          const [dd, mm, yyyy] = dateStr.split("-").map((p) => parseInt(p, 10));
+          if (dd && mm && yyyy) return new Date(yyyy, mm - 1, dd);
+        }
+        
+        // Try ISO format
+        const date = new Date(dateStr);
+        return isNaN(date.getTime()) ? null : date;
       };
 
       const start = parseDate(startDate);
@@ -68,7 +145,7 @@ router.post(
       
       if (!start || !end) {
         return res.status(400).json({ 
-          message: "Invalid date format. Use DD-MM-YYYY" 
+          message: "Invalid date format. Use DD-MM-YYYY or ISO format" 
         });
       }
 
@@ -78,16 +155,25 @@ router.post(
         });
       }
 
-      // Calculate working days between start and end dates
-      // This excludes: Sundays, 2nd Saturdays, Mandatory Public Holidays, 
-      // and Optional Holidays marked as TAKEN
-      const workingDays = await countWorkingDaysInRange(startDate, endDate);
+      // Format dates for calculation
+      const formatDateForCalc = (date) => {
+        const dd = String(date.getDate()).padStart(2, '0');
+        const mm = String(date.getMonth() + 1).padStart(2, '0');
+        const yyyy = date.getFullYear();
+        return `${dd}-${mm}-${yyyy}`;
+      };
+
+      const startStr = formatDateForCalc(start);
+      const endStr = formatDateForCalc(end);
+
+      // Calculate working days (excludes holidays)
+      const workingDays = await countWorkingDaysInRange(startStr, endStr);
       
       // Calculate total hours (working days × 8 hours per day)
       const calculatedTotalHours = workingDays * 8;
       
       // Calculate duration in months
-      const calculatedDurationMonths = calculateDurationMonths(startDate, endDate);
+      const calculatedDurationMonths = calculateDurationMonths(startStr, endStr);
 
       // Use manager's values if provided, otherwise use calculated values
       const finalTotalHours = totalEstimatedHours || calculatedTotalHours;
@@ -95,15 +181,18 @@ router.post(
 
       const project = await Project.create({
         name,
-        code,
+        code: code || name.replace(/\s+/g, '_').toUpperCase(),
         description,
-        startDate,
-        endDate,
+        startDate: start,
+        endDate: end,
         totalEstimatedHours: finalTotalHours,
         durationMonths: finalDurationMonths,
+        currentPhase,
+        status,
+        assignments: [],
       });
 
-      // ---- LOG OPERATION ----
+      // Log creation
       try {
         await Log.create({
           type: "OPERATION",
@@ -113,14 +202,13 @@ router.post(
           userName: req.user.fullName,
           userEmail: req.user.email,
           role: req.user.role,
-          description: `Created project ${project.name} (${project.code || "NO_CODE"}) from ${startDate} to ${endDate}`,
+          description: `Created project ${project.name} (${project.code})`,
           status: "SUCCESS",
           ipAddress: getClientIp(req),
           details: {
             projectId: project._id,
-            code: project.code,
-            startDate,
-            endDate,
+            startDate: startStr,
+            endDate: endStr,
             workingDays,
             totalEstimatedHours: finalTotalHours,
             durationMonths: finalDurationMonths,
@@ -138,7 +226,7 @@ router.post(
 
       res.status(201).json({
         ...project.toObject(),
-        workingDays, // Include calculated working days in response
+        workingDays,
         calculatedTotalHours,
         calculatedDurationMonths,
         calculationNotes: {
@@ -154,10 +242,9 @@ router.post(
   }
 );
 
-/**
- * GET /api/projects
- * Manager/Admin: list all projects with assignments
- */
+/* =====================================================
+   GET ALL PROJECTS WITH HOURS CALCULATION
+   ===================================================== */
 router.get(
   "/",
   authMiddleware,
@@ -165,22 +252,46 @@ router.get(
   async (req, res) => {
     try {
       const projects = await Project.find()
-        .populate("assignments.user")
+        .populate("assignments.user", "fullName email role")
         .sort({ createdAt: -1 });
 
-      // Calculate working days for each project
-      const projectsWithDetails = await Promise.all(projects.map(async (project) => {
-        const workingDays = await countWorkingDaysInRange(project.startDate, project.endDate);
-        const calculatedTotalHours = workingDays * 8;
-        return {
-          ...project.toObject(),
-          workingDays,
-          calculatedTotalHours,
-          calculationDifference: project.totalEstimatedHours - calculatedTotalHours
-        };
-      }));
+      // Calculate hours for each project
+      const response = await Promise.all(
+        projects.map(async (project) => {
+          // Format dates for calculation
+          const formatDate = (date) => {
+            if (!date) return '';
+            const d = new Date(date);
+            const dd = String(d.getDate()).padStart(2, '0');
+            const mm = String(d.getMonth() + 1).padStart(2, '0');
+            const yyyy = d.getFullYear();
+            return `${dd}-${mm}-${yyyy}`;
+          };
 
-      res.json(projectsWithDetails);
+          const startStr = formatDate(project.startDate);
+          const endStr = formatDate(project.endDate);
+          
+          let workingDays = 0;
+          if (startStr && endStr) {
+            workingDays = await countWorkingDaysInRange(startStr, endStr);
+          }
+
+          const calculatedTotalHours = workingDays * 8;
+          const hours = await calculateProjectHoursFromTasks(project);
+          const newSystemHours = await calculateProjectHoursFromEstimates(project);
+
+          return {
+            ...project.toObject(),
+            workingDays,
+            calculatedTotalHours,
+            calculationDifference: project.totalEstimatedHours - calculatedTotalHours,
+            hours, // Legacy system hours
+            newSystemHours, // New system hours
+          };
+        })
+      );
+
+      res.json(response);
     } catch (err) {
       console.error("List projects error:", err);
       res.status(500).json({ message: "Server error" });
@@ -188,72 +299,167 @@ router.get(
   }
 );
 
-/**
- * GET /api/projects/my
- * Employee: projects assigned to me
- */
+/* =====================================================
+   GET MY PROJECTS (EMPLOYEE VIEW)
+   ===================================================== */
 router.get("/my", authMiddleware, async (req, res) => {
   try {
     const projects = await Project.find({
       "assignments.user": req.user.id,
-    }).sort({ createdAt: -1 });
+      status: { $ne: "ARCHIVED" } // Don't show archived projects by default
+    })
+    .populate("assignments.user", "fullName email role")
+    .sort({ createdAt: -1 });
 
-    // Calculate working days for each project
-    const projectsWithDetails = await Promise.all(projects.map(async (project) => {
-      const workingDays = await countWorkingDaysInRange(project.startDate, project.endDate);
-      const calculatedTotalHours = workingDays * 8;
-      return {
-        ...project.toObject(),
-        workingDays,
-        calculatedTotalHours
-      };
-    }));
+    const response = await Promise.all(
+      projects.map(async (project) => {
+        const formatDate = (date) => {
+          if (!date) return '';
+          const d = new Date(date);
+          const dd = String(d.getDate()).padStart(2, '0');
+          const mm = String(d.getMonth() + 1).padStart(2, '0');
+          const yyyy = d.getFullYear();
+          return `${dd}-${mm}-${yyyy}`;
+        };
 
-    res.json(projectsWithDetails);
+        const startStr = formatDate(project.startDate);
+        const endStr = formatDate(project.endDate);
+        
+        let workingDays = 0;
+        if (startStr && endStr) {
+          workingDays = await countWorkingDaysInRange(startStr, endStr);
+        }
+
+        const calculatedTotalHours = workingDays * 8;
+        const hours = await calculateProjectHoursFromTasks(project);
+
+        return {
+          ...project.toObject(),
+          workingDays,
+          calculatedTotalHours,
+          hours,
+        };
+      })
+    );
+
+    res.json(response);
   } catch (err) {
     console.error("My projects error:", err);
     res.status(500).json({ message: "Server error" });
   }
 });
 
-/**
- * PATCH /api/projects/:id
- * Manager: update project details including dates
- */
+/* =====================================================
+   GET SINGLE PROJECT DETAILS
+   ===================================================== */
+router.get("/:id", authMiddleware, async (req, res) => {
+  try {
+    const project = await Project.findById(req.params.id)
+      .populate("assignments.user", "fullName email role department");
+
+    if (!project) {
+      return res.status(404).json({ message: "Project not found" });
+    }
+
+    // Check if user has access
+    const isAssigned = project.assignments.some(
+      assignment => getAssignmentUserIdString(assignment) === req.user.id.toString()
+    );
+    
+    if (req.user.role === "employee" && !isAssigned) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    // Calculate statistics
+    const formatDate = (date) => {
+      if (!date) return '';
+      const d = new Date(date);
+      const dd = String(d.getDate()).padStart(2, '0');
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const yyyy = d.getFullYear();
+      return `${dd}-${mm}-${yyyy}`;
+    };
+
+    const startStr = formatDate(project.startDate);
+    const endStr = formatDate(project.endDate);
+    
+    let workingDays = 0;
+    if (startStr && endStr) {
+      workingDays = await countWorkingDaysInRange(startStr, endStr);
+    }
+
+    const calculatedTotalHours = workingDays * 8;
+    const hours = await calculateProjectHoursFromTasks(project);
+    const tasks = await Task.find({ projectId: project._id })
+      .populate("assignedUserId", "fullName email")
+      .populate("createdByUserId", "fullName email")
+      .sort({ createdAt: -1 })
+      .limit(50); // Limit recent tasks
+
+    res.json({
+      ...project.toObject(),
+      workingDays,
+      calculatedTotalHours,
+      calculationDifference: project.totalEstimatedHours - calculatedTotalHours,
+      hours,
+      recentTasks: tasks,
+    });
+  } catch (err) {
+    console.error("Get project error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+/* =====================================================
+   UPDATE PROJECT
+   ===================================================== */
 router.patch(
   "/:id",
   authMiddleware,
   requireRole(["manager"]),
   async (req, res) => {
     try {
-      const { id } = req.params;
-      const updates = req.body;
-      
-      const project = await Project.findById(id);
+      const project = await Project.findById(req.params.id);
       if (!project) {
         return res.status(404).json({ message: "Project not found" });
       }
 
-      // If dates are being updated, recalculate working days
-      if (updates.startDate || updates.endDate) {
-        const newStartDate = updates.startDate || project.startDate;
-        const newEndDate = updates.endDate || project.endDate;
-        
-        const workingDays = await countWorkingDaysInRange(newStartDate, newEndDate);
-        const calculatedTotalHours = workingDays * 8;
-        const calculatedDurationMonths = calculateDurationMonths(newStartDate, newEndDate);
+      const updates = { ...req.body };
 
-        // Update calculated fields if not explicitly set by manager
+      // If dates are being updated, recalculate
+      if (updates.startDate || updates.endDate) {
+        const newStartDate = updates.startDate ? new Date(updates.startDate) : project.startDate;
+        const newEndDate = updates.endDate ? new Date(updates.endDate) : project.endDate;
+
+        const formatDate = (date) => {
+          const d = new Date(date);
+          const dd = String(d.getDate()).padStart(2, '0');
+          const mm = String(d.getMonth() + 1).padStart(2, '0');
+          const yyyy = d.getFullYear();
+          return `${dd}-${mm}-${yyyy}`;
+        };
+
+        const startStr = formatDate(newStartDate);
+        const endStr = formatDate(newEndDate);
+        
+        const workingDays = await countWorkingDaysInRange(startStr, endStr);
+        const calculatedTotalHours = workingDays * 8;
+        const calculatedDurationMonths = calculateDurationMonths(startStr, endStr);
+
+        // Update calculated fields if not explicitly set
         if (!updates.totalEstimatedHours) {
           updates.totalEstimatedHours = calculatedTotalHours;
         }
         if (!updates.durationMonths) {
           updates.durationMonths = calculatedDurationMonths;
         }
+
+        updates.startDate = newStartDate;
+        updates.endDate = newEndDate;
       }
 
       const updatedProject = await Project.findByIdAndUpdate(
-        id,
+        req.params.id,
         updates,
         { new: true }
       ).populate("assignments.user");
@@ -273,7 +479,7 @@ router.patch(
           ipAddress: getClientIp(req),
           details: {
             projectId: updatedProject._id,
-            updates: Object.keys(updates)
+            updates: Object.keys(updates),
           },
         });
       } catch (logErr) {
@@ -288,10 +494,9 @@ router.patch(
   }
 );
 
-/**
- * POST /api/projects/:id/assign
- * Manager: assign employee to project with role
- */
+/* =====================================================
+   ASSIGN EMPLOYEE TO PROJECT
+   ===================================================== */
 router.post(
   "/:id/assign",
   authMiddleware,
@@ -311,6 +516,7 @@ router.post(
       const already = project.assignments.find(
         (a) => getAssignmentUserIdString(a) === userId
       );
+      
       if (!already) {
         project.assignments.push({ user: userId, role });
         await project.save();
@@ -320,7 +526,7 @@ router.post(
         "assignments.user"
       );
 
-      // ---- LOG OPERATION ----
+      // Log assignment
       try {
         await Log.create({
           type: "OPERATION",
@@ -330,7 +536,7 @@ router.post(
           userName: req.user.fullName,
           userEmail: req.user.email,
           role: req.user.role,
-          description: `Assigned ${employee.fullName} (${employee.email}) to project ${project.name}`,
+          description: `Assigned ${employee.fullName} to project ${project.name}`,
           status: "SUCCESS",
           ipAddress: getClientIp(req),
           details: {
@@ -352,44 +558,41 @@ router.post(
   }
 );
 
-/**
- * DELETE /api/projects/:id/assign/:userId
- * Manager: unassign employee from project
- */
+/* =====================================================
+   UNASSIGN EMPLOYEE FROM PROJECT
+   ===================================================== */
 router.delete(
   "/:id/assign/:userId",
   authMiddleware,
   requireRole(["manager"]),
   async (req, res) => {
     try {
-      const { id, userId } = req.params;
-
-      const project = await Project.findById(id).populate(
+      const project = await Project.findById(req.params.id).populate(
         "assignments.user",
         "fullName email"
       );
+      
       if (!project) return res.status(404).json({ message: "Not found" });
 
       const removed = project.assignments.find(
-        (a) => getAssignmentUserIdString(a) === userId
+        (a) => getAssignmentUserIdString(a) === req.params.userId
       );
 
       project.assignments = project.assignments.filter(
-        (a) => getAssignmentUserIdString(a) !== userId
+        (a) => getAssignmentUserIdString(a) !== req.params.userId
       );
+
       await project.save();
 
       const populated = await Project.findById(project._id).populate(
         "assignments.user"
       );
 
-      // ---- LOG OPERATION ----
+      // Log unassignment
       if (removed) {
         const removedUser = removed.user;
-        const removedName =
-          removedUser?.fullName || removedUser?.email || "employee";
-        const removedEmail = removedUser?.email || "";
-
+        const removedName = removedUser?.fullName || removedUser?.email || "employee";
+        
         try {
           await Log.create({
             type: "OPERATION",
@@ -399,13 +602,13 @@ router.delete(
             userName: req.user.fullName,
             userEmail: req.user.email,
             role: req.user.role,
-            description: `Unassigned ${removedName} (${removedEmail}) from project ${project.name}`,
+            description: `Unassigned ${removedName} from project ${project.name}`,
             status: "SUCCESS",
             ipAddress: getClientIp(req),
             details: {
               projectId: project._id,
-              employeeId: removedUser?._id || userId,
-              employeeEmail: removedEmail,
+              employeeId: removedUser?._id || req.params.userId,
+              employeeEmail: removedUser?.email,
             },
           });
         } catch (logErr) {
@@ -416,6 +619,53 @@ router.delete(
       res.json(populated);
     } catch (err) {
       console.error("Unassign project error:", err);
+      res.status(500).json({ message: "Server error" });
+    }
+  }
+);
+
+/* =====================================================
+   ARCHIVE PROJECT
+   ===================================================== */
+router.post(
+  "/:id/archive",
+  authMiddleware,
+  requireRole(["manager"]),
+  async (req, res) => {
+    try {
+      const project = await Project.findById(req.params.id);
+      if (!project) {
+        return res.status(404).json({ message: "Project not found" });
+      }
+
+      project.status = "ARCHIVED";
+      project.archivedAt = new Date();
+      await project.save();
+
+      // Log archiving
+      try {
+        await Log.create({
+          type: "OPERATION",
+          action: "ARCHIVE_PROJECT",
+          entity: "PROJECT",
+          user: req.user.id,
+          userName: req.user.fullName,
+          userEmail: req.user.email,
+          role: req.user.role,
+          description: `Archived project ${project.name}`,
+          status: "SUCCESS",
+          ipAddress: getClientIp(req),
+          details: {
+            projectId: project._id,
+          },
+        });
+      } catch (logErr) {
+        console.error("Log ARCHIVE_PROJECT error:", logErr.message);
+      }
+
+      res.json(project);
+    } catch (err) {
+      console.error("Archive project error:", err);
       res.status(500).json({ message: "Server error" });
     }
   }
