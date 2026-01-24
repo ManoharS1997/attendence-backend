@@ -7,7 +7,7 @@ const { Schema } = mongoose;
  */
 export const ATTENDANCE_STATUS = [
   "PRESENT FULL DAY",
-  "PRESENT HALF DAY",
+  "PRESENT HALD DAY",
   "CASUAL LEAVE",
   "EMERGENCY LEAVE",
   "SICK LEAVE",
@@ -124,6 +124,23 @@ const attendanceSchema = new Schema(
     },
 
     /**
+     * Extra hours (decimal, for UI)
+     * Example: 1.5 = 1 hour 30 mins
+     */
+    extraHoursWorked: {
+      type: Number,
+      default: 0
+    },
+
+    /**
+     * Whether extra hours are approved by manager
+     */
+    extraHoursApproved: {
+      type: Boolean,
+      default: false
+    },
+
+    /**
      * Extra minutes (beyond 8 hours)
      * Used ONLY for comp-off eligibility
      */
@@ -139,6 +156,22 @@ const attendanceSchema = new Schema(
       type: String,
       enum: ["FUN", "DEVELOPMENT", "PERSONAL"],
       default: null
+    },
+
+    /**
+     * Is this attendance a leave request
+     */
+    isLeaveRequest: {
+      type: Boolean,
+      default: false
+    },
+
+    /**
+     * Comp-off days earned from extra hours
+     */
+    compOffDaysEarned: {
+      type: Number,
+      default: 0
     },
 
     /**

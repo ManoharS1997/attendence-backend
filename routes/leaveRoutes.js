@@ -49,7 +49,8 @@ const accumulateUsage = (records) => {
     
     // Add extra hours
     if (r.extraHoursWorked) {
-      extraHours += r.extraHoursWorked;
+      extraHours += (r.extraHoursWorked || 0) / 60;
+
     }
   }
 

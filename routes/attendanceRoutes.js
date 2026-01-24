@@ -54,40 +54,18 @@ const todayString = () => {
 /**
  * Check if a status is considered a leave status
  */
-const isLeaveStatus = (status) =>
-  [
-    "EMERGENCY LEAVE",
-    "CASUAL LEAVE",
-    "PRESENT HALF DAY",
-    "Half Day - Fun Thursday",
-    "Half Day - Development",
-    "COMPOFF",
-    "ABSENT",
-    "SICK LEAVE"
-  ].includes(status);
+// ✅ FIXED: Correct leave statuses only
+const LEAVE_STATUSES = [
+  "CASUAL LEAVE",
+  "EMERGENCY LEAVE",
+  "SICK LEAVE",
+  "ABSENT",
+  "PUBLIC HOLIDAY",
+  "SUNDAY",
+  "2ND SATURDAY"
+];
 
-/**
- * Calculate extra hours worked beyond 8 working hours
- * Returns decimal hours (e.g., 2.5)
- */
-const calculateExtraHours = (workInTime, workOutTime) => {
-  if (!workInTime || !workOutTime) return 0;
-
-  const [inH, inM] = workInTime.split(":").map(Number);
-  const [outH, outM] = workOutTime.split(":").map(Number);
-
-  // Validate time values
-  if ([inH, inM, outH, outM].some(v => Number.isNaN(v))) {
-    return 0;
-  }
-
-  const workedMinutes = (outH * 60 + outM) - (inH * 60 + inM);
-  const regularMinutes = 8 * 60; // 8 working hours
-
-  if (workedMinutes <= regularMinutes) return 0;
-
-  return Number(((workedMinutes - regularMinutes) / 60).toFixed(2));
-};
+const isLeaveStatus = (status) => LEAVE_STATUSES.includes(status);
 
 /**
  * Create log entry for auditing
@@ -100,10 +78,11 @@ const createLog = async (logData) => {
   }
 };
 
-// Constants from first router
+// ✅ FIXED CONSTANTS - REMOVE DAILY_WORK_MIN
 const OFFICE_START_MIN = 10 * 60; // 10:00
 const OFFICE_END_MIN = 18 * 60;   // 18:00
-const DAILY_WORK_MIN = 8 * 60;    // 8 hours
+const OFFICE_GROSS_MIN = 8 * 60;  // ✅ ADDED: 8 hours gross office time
+const HALF_DAY_MIN = 3 * 60;      // 3 hours for half day
 
 /* ======================== ROUTES ======================== */
 
@@ -120,7 +99,8 @@ router.post("/", authMiddleware, async (req, res) => {
       status,
       workInTime,
       workOutTime,
-      lunchBreakMinutes = 0,
+      lunchInTime,       // ✅ NEW: Lunch In time
+      lunchOutTime,      // ✅ NEW: Lunch Out time
       halfDayType,
       note,
       extraWork
@@ -129,6 +109,24 @@ router.post("/", authMiddleware, async (req, res) => {
     // Validate required fields
     if (!date || !status) {
       return res.status(400).json({ message: "Date and status required" });
+    }
+
+    // ✅ Calculate lunch minutes from lunchInTime/lunchOutTime
+    let lunchBreakMinutes = 0;
+    if (lunchInTime && lunchOutTime) {
+      const lunchInMin = toMinutes(lunchInTime);
+      const lunchOutMin = toMinutes(lunchOutTime);
+      
+      if (lunchInMin !== null && lunchOutMin !== null && lunchOutMin > lunchInMin) {
+        lunchBreakMinutes = lunchOutMin - lunchInMin;
+      }
+    }
+
+    // ✅ Half day validation - NO LUNCH allowed
+    if (status === "PRESENT HALF DAY" && lunchBreakMinutes > 0) {
+      return res.status(400).json({ 
+        message: "Lunch not allowed for half day attendance" 
+      });
     }
 
     const existing = await Attendance.findOne({
@@ -146,44 +144,70 @@ router.post("/", authMiddleware, async (req, res) => {
     const isToday = date === todayString();
     const leaveLike = isLeaveStatus(status);
 
-    // Calculate worked minutes with office timings logic from first router
+    // ✅ Calculate worked minutes with CORRECT formula
     let workedMinutes = 0;
     let lateMinutes = 0;
     let earlyLeaveMinutes = 0;
-    let extraHoursWorked = 0;
+    let extraMinutesWorked = 0; // ✅ NEW: Extra minutes beyond 8 hours
 
     if (workInTime && workOutTime) {
       const inMin = toMinutes(workInTime);
       const outMin = toMinutes(workOutTime);
 
       if (inMin !== null && outMin !== null) {
-        workedMinutes = outMin - inMin - lunchBreakMinutes;
+        // ✅ CORRECT FORMULA: Gross minutes minus lunch minutes
+        const grossMinutes = outMin - inMin;
+        const lunchMinutes = lunchInTime && lunchOutTime ? 
+          (toMinutes(lunchOutTime) - toMinutes(lunchInTime)) : 0;
+        
+        workedMinutes = grossMinutes - lunchMinutes;
 
+        // Calculate late minutes
         if (inMin > OFFICE_START_MIN) {
           lateMinutes = inMin - OFFICE_START_MIN;
-          workedMinutes -= lateMinutes;
         }
 
+        // Calculate early leave minutes
         if (outMin < OFFICE_END_MIN) {
           earlyLeaveMinutes = OFFICE_END_MIN - outMin;
-          workedMinutes -= earlyLeaveMinutes;
         }
 
-        if (workedMinutes < 0) workedMinutes = 0;
-
-        // Calculate extra hours using second router's logic
-        extraHoursWorked = calculateExtraHours(workInTime, workOutTime);
+        // ✅ FIXED: Extra minutes calculation - beyond 8 hours gross
+        extraMinutesWorked = Math.max(0, workedMinutes - OFFICE_GROSS_MIN);
       }
     }
 
-    const hoursWorked = Math.min(8, Math.floor(workedMinutes / 60));
+    // ✅ CRITICAL FIX: Leave days AND COMPOFF NEVER count hours
+    if (isLeaveStatus(status) || status === "COMPOFF") {
+      workedMinutes = 0;
+      lateMinutes = 0;
+      earlyLeaveMinutes = 0;
+      extraMinutesWorked = 0;
+    }
 
-    // Auto approve only SAME DAY full day present (first router's logic)
+    let hoursWorked = workedMinutes / 60; // ✅ Hours as decimal
+    let extraHoursWorked = extraMinutesWorked / 60; // ✅ Extra hours as decimal
+
+    // ✅ Ensure zero hours for leaves even after calculation
+    if (isLeaveStatus(status) || status === "COMPOFF") {
+      hoursWorked = 0;
+      extraHoursWorked = 0;
+    }
+
+    // ✅ Half day validation - must work minimum 3 hours
+    if (status === "PRESENT HALF DAY" && workedMinutes < HALF_DAY_MIN) {
+      return res.status(400).json({ 
+        message: "Half day requires minimum 3 working hours" 
+      });
+    }
+
+    // ✅ FIXED: Auto approve only SAME DAY full day present
+    // Changed from hoursWorked >= DAILY_WORK_MIN/60 to hoursWorked > 0
     if (
       !existing &&
       isToday &&
       status === "PRESENT FULL DAY" &&
-      hoursWorked === 8
+      hoursWorked > 0  // ✅ FIXED: Changed from DAILY_WORK_MIN/60 to > 0
     ) {
       const record = await Attendance.create({
         user: req.user.id,
@@ -191,11 +215,14 @@ router.post("/", authMiddleware, async (req, res) => {
         status,
         workInTime,
         workOutTime,
-        lunchBreakMinutes,
+        lunchInTime,       // ✅ Store lunch in
+        lunchOutTime,      // ✅ Store lunch out
+        lunchBreakMinutes, // ✅ Keep backward compatibility
         lateMinutes,
         earlyLeaveMinutes,
-        hoursWorked: 8,
-        extraHoursWorked,
+        hoursWorked,       // ✅ Use calculated hours
+        extraMinutesWorked, // ✅ Store extra minutes
+        extraHoursWorked,   // ✅ Store extra hours
         extraHoursApproved: false,
         compOffDaysEarned: 0,
         isLeaveRequest: false,
@@ -208,7 +235,7 @@ router.post("/", authMiddleware, async (req, res) => {
         }
       });
 
-      // Extra hours need approval for comp-off (first router's logic)
+      // Extra hours need approval for comp-off (if at least 1 hour)
       if (extraHoursWorked >= 1) {
         await AttendanceRequest.create({
           user: req.user.id,
@@ -221,7 +248,7 @@ router.post("/", authMiddleware, async (req, res) => {
         });
       }
 
-      // Log the action (second router's logic)
+      // Log the action
       await createLog({
         type: "OPERATION",
         action: "MARK_ATTENDANCE",
@@ -250,12 +277,15 @@ router.post("/", authMiddleware, async (req, res) => {
       toStatus: status,
       toWorkInTime: workInTime || "",
       toWorkOutTime: workOutTime || "",
+      toLunchInTime: lunchInTime || "",    // ✅ Include lunch in
+      toLunchOutTime: lunchOutTime || "",  // ✅ Include lunch out
       lunchBreakMinutes,
       halfDayType,
       note: note || "",
       calculated: {
         hoursWorked,
         extraHoursWorked,
+        extraMinutesWorked, // ✅ Include extra minutes
         lateMinutes,
         earlyLeaveMinutes
       },
@@ -267,7 +297,7 @@ router.post("/", authMiddleware, async (req, res) => {
       requestPayload.fromStatus = existing.status;
     }
 
-    // Handle extra hours or comp-off (second router's logic)
+    // Handle extra hours or comp-off
     if (status === "COMPOFF") {
       requestPayload.extraWork = extraWork || null;
     } else if (status === "PRESENT FULL DAY" && extraHoursWorked > 0) {
@@ -419,7 +449,7 @@ router.get("/extra-hours", authMiddleware, async (req, res) => {
 
     const records = await Attendance.find(filter);
 
-    // ✅ FIX 2: Sum ALL extraHoursWorked, not just approved ones
+    // ✅ Sum ALL extraHoursWorked, not just approved ones
     const totalExtraHours = records.reduce((sum, record) => 
       sum + (record.extraHoursWorked || 0), 0
     );
@@ -536,8 +566,6 @@ router.get(
 /* ------------------------ PATCH /api/attendance/requests/:id/decision ------------------------ */
 /**
  * Manager approves/rejects an attendance request
- * ✅ FIX 1: DO NOT MODIFY daily extra hours during approval
- * ✅ FIX 2: COMP-OFF CREDIT rule from first router
  */
 router.patch(
   "/requests/:id/decision",
@@ -584,12 +612,15 @@ router.patch(
           status: request.toStatus,
           workInTime: request.toWorkInTime || "",
           workOutTime: request.toWorkOutTime || "",
+          lunchInTime: request.toLunchInTime || "",      // ✅ Store lunch in
+          lunchOutTime: request.toLunchOutTime || "",    // ✅ Store lunch out
           lunchBreakMinutes: request.lunchBreakMinutes || 0,
           lateMinutes: request.calculated?.lateMinutes || 0,
           earlyLeaveMinutes: request.calculated?.earlyLeaveMinutes || 0,
-          hoursWorked: Math.min(8, request.calculated?.hoursWorked || 0),
+          hoursWorked: request.calculated?.hoursWorked || 0,
+          extraMinutesWorked: request.calculated?.extraMinutesWorked || 0, // ✅ Store extra minutes
+          extraHoursWorked: request.extraHours || (request.calculated?.extraHoursWorked || 0),
           note: request.note || "",
-          extraHoursWorked: request.extraHours || 0,
           extraHoursApproved: decision === "APPROVED",
           compOffDaysEarned: 0,
           isLeaveRequest: isLeaveStatus(request.toStatus),
@@ -613,12 +644,14 @@ router.patch(
           attendanceDoc.status = request.toStatus;
           attendanceDoc.workInTime = request.toWorkInTime || attendanceDoc.workInTime;
           attendanceDoc.workOutTime = request.toWorkOutTime || attendanceDoc.workOutTime;
+          attendanceDoc.lunchInTime = request.toLunchInTime || attendanceDoc.lunchInTime;     // ✅ Update lunch in
+          attendanceDoc.lunchOutTime = request.toLunchOutTime || attendanceDoc.lunchOutTime;  // ✅ Update lunch out
           attendanceDoc.lunchBreakMinutes = request.lunchBreakMinutes || attendanceDoc.lunchBreakMinutes;
           attendanceDoc.note = request.note || attendanceDoc.note;
           attendanceDoc.halfDayType = request.halfDayType || attendanceDoc.halfDayType;
           attendanceDoc.isLeaveRequest = isLeaveStatus(request.toStatus);
 
-          // ✅ FIX 1: Handle extra hours and comp-off calculation
+          // ✅ Handle extra hours and comp-off calculation
           // DO NOT modify extraHoursWorked - keep daily hours intact
           if (request.extraHours) {
             const fullCompOffDays = Math.floor(request.extraHours / 8);
@@ -635,7 +668,7 @@ router.patch(
             attendanceDoc.extraHoursApproved = true;
           }
 
-          // ✅ COMP-OFF CREDIT RULE from first router
+          // ✅ COMP-OFF CREDIT RULE
           if (
             request.calculated?.extraHoursWorked >= 1 &&
             request.toStatus === "PRESENT FULL DAY"
@@ -645,7 +678,7 @@ router.patch(
             });
           }
 
-          // 🔐 LOCK for half day & leave (from first router)
+          // 🔐 LOCK for half day & leave
           if (
             request.toStatus === "PRESENT HALF DAY" ||
             isLeaveStatus(request.toStatus)
@@ -666,7 +699,18 @@ router.patch(
         if (request.calculated) {
           attendanceDoc.lateMinutes = request.calculated.lateMinutes || attendanceDoc.lateMinutes;
           attendanceDoc.earlyLeaveMinutes = request.calculated.earlyLeaveMinutes || attendanceDoc.earlyLeaveMinutes;
-          attendanceDoc.hoursWorked = Math.min(8, request.calculated.hoursWorked || 0);
+          attendanceDoc.hoursWorked = request.calculated.hoursWorked || attendanceDoc.hoursWorked;
+          attendanceDoc.extraMinutesWorked = request.calculated.extraMinutesWorked || attendanceDoc.extraMinutesWorked;
+          attendanceDoc.extraHoursWorked = request.calculated.extraHoursWorked || attendanceDoc.extraHoursWorked;
+        }
+
+        // ✅ CRITICAL FIX: Ensure leave days AND COMPOFF do not carry hours
+        if (isLeaveStatus(request.toStatus) || request.toStatus === "COMPOFF") {
+          attendanceDoc.hoursWorked = 0;
+          attendanceDoc.extraMinutesWorked = 0;
+          attendanceDoc.extraHoursWorked = 0;
+          attendanceDoc.lateMinutes = 0;
+          attendanceDoc.earlyLeaveMinutes = 0;
         }
 
         // Update manager decision
