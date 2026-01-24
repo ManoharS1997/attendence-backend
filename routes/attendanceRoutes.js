@@ -65,7 +65,26 @@ const LEAVE_STATUSES = [
   "2ND SATURDAY"
 ];
 
+/**
+ * Check if a status is considered a leave status
+ */
 const isLeaveStatus = (status) => LEAVE_STATUSES.includes(status);
+
+/**
+ * Normalize frontend half-day status to backend enum
+ */
+const normalizeStatus = (status) => {
+  if (status === "Half Day - Fun Thursday") {
+    return { status: "PRESENT HALF DAY", halfDayType: "FUN" };
+  }
+
+  if (status === "Half Day - Development") {
+    return { status: "PRESENT HALF DAY", halfDayType: "DEVELOPMENT" };
+  }
+
+  return { status, halfDayType: null };
+};
+
 
 /**
  * Create log entry for auditing
@@ -95,16 +114,20 @@ const HALF_DAY_MIN = 3 * 60;      // 3 hours for half day
 router.post("/", authMiddleware, async (req, res) => {
   try {
     const {
-      date,
-      status,
-      workInTime,
-      workOutTime,
-      lunchInTime,       // ✅ NEW: Lunch In time
-      lunchOutTime,      // ✅ NEW: Lunch Out time
-      halfDayType,
-      note,
-      extraWork
-    } = req.body;
+  date,
+  status: rawStatus,
+  workInTime,
+  workOutTime,
+  lunchInTime,
+  lunchOutTime,
+  note,
+  extraWork
+} = req.body;
+
+const normalized = normalizeStatus(rawStatus);
+const status = normalized.status;
+const halfDayType = normalized.halfDayType;
+
 
     // Validate required fields
     if (!date || !status) {

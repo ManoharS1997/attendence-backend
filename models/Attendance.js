@@ -7,7 +7,7 @@ const { Schema } = mongoose;
  */
 export const ATTENDANCE_STATUS = [
   "PRESENT FULL DAY",
-  "PRESENT HALD DAY",
+  "PRESENT HALF DAY",   // ✅ REQUIRED
   "CASUAL LEAVE",
   "EMERGENCY LEAVE",
   "SICK LEAVE",
@@ -17,6 +17,7 @@ export const ATTENDANCE_STATUS = [
   "COMPOFF",
   "ABSENT"
 ];
+
 
 /**
  * Extra work details (for Comp-Off reference only)
