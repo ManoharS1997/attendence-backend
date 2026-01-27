@@ -4,7 +4,8 @@ import mongoose from "mongoose";
 /**
  * Assignment Schema
  * - Multiple employees can be assigned to one project
- * - Each employee has a role (Developer, DevOps, QA, etc.)
+ * - Each employee has a role (Developer, DevOps, QA, Tester, PM, Tech Lead, etc.)
+ * - Assignment itself does NOT reduce hours
  */
 const assignmentSchema = new mongoose.Schema(
   {
@@ -15,7 +16,26 @@ const assignmentSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      required: true, // Developer, DevOps, QA, Tester, PM, Tech Lead
+      required: true, // Developer, DevOps, QA, Tester, PM, Tech Lead, Support, Other
+      uppercase: true,
+    },
+  },
+  { _id: false }
+);
+
+/**
+ * Role-wise consumption tracking
+ * - Used to explain negative balance (overrun responsibility)
+ */
+const roleConsumptionSchema = new mongoose.Schema(
+  {
+    role: {
+      type: String,
+      required: true,
+    },
+    consumedHours: {
+      type: Number,
+      default: 0,
     },
   },
   { _id: false }
@@ -26,7 +46,9 @@ const assignmentSchema = new mongoose.Schema(
  */
 const projectSchema = new mongoose.Schema(
   {
-    // Basic Info
+    /* =====================================================
+       BASIC INFO
+       ===================================================== */
     name: {
       type: String,
       required: true,
@@ -38,10 +60,9 @@ const projectSchema = new mongoose.Schema(
       type: String,
     },
 
-    /**
-     * Project Duration
-     * - Used to ensure hours reduce ONLY within this period
-     */
+    /* =====================================================
+       PROJECT DURATION
+       ===================================================== */
     startDate: {
       type: Date,
       required: true,
@@ -51,40 +72,78 @@ const projectSchema = new mongoose.Schema(
       required: true,
     },
 
-    /**
-     * Estimated Hours
-     * - Balance will be calculated from Task collection
-     * - Can go negative
-     */
+    /* =====================================================
+       ESTIMATION & BALANCE (SINGLE SOURCE OF TRUTH)
+       ===================================================== */
     totalEstimatedHours: {
       type: Number,
-      default: 0,
+      required: true,
+      min: 0,
     },
 
-    /**
-     * Optional: for display only (not for calculation)
-     */
-    durationMonths: {
+    // Total hours consumed so far (developer + completed tasks)
+    consumedHours: {
       type: Number,
       default: 0,
     },
 
-    /**
-     * Project Phase
-     * - Controls which role can reduce hours
-     */
-    currentPhase: {
-      type: String,
-      enum: ["DEVELOPMENT", "DEPLOYMENT", "TESTING", "REVIEW"],
-      default: "DEVELOPMENT",
+    // Balance hours (can go negative)
+    balanceHours: {
+      type: Number,
+      default: function () {
+        return this.totalEstimatedHours;
+      },
     },
 
-    /**
-     * Assigned Employees with Roles
-     */
+    /* =====================================================
+       ROLE-WISE CONSUMPTION (AUDIT & DELAY REASON)
+       ===================================================== */
+    consumptionByRole: {
+      type: [roleConsumptionSchema],
+      default: [],
+    },
+
+    /* =====================================================
+       PROJECT STATUS & CONTROL
+       ===================================================== */
+    status: {
+      type: String,
+      enum: ["DRAFT", "APPROVED", "REJECTED", "COMPLETED", "ARCHIVED"]
+,
+      default: "DRAFT",
+    },
+
+    /* =====================================================
+       PROJECT PHASE (OPTIONAL CONTROL)
+       ===================================================== */
+    currentPhase: {
+  type: String,
+  enum: [
+    "PLANNING",      // ✅ ADD THIS
+    "DEVELOPMENT",
+    "TESTING",
+    "DEPLOYMENT",
+    "REVIEW",
+    "COMPLETED"
+  ],
+  default: "PLANNING"
+},
+
+
+    /* =====================================================
+       ASSIGNED EMPLOYEES WITH ROLES
+       ===================================================== */
     assignments: [assignmentSchema],
   },
   { timestamps: true }
 );
+
+/* =====================================================
+   SAFETY: AUTO SYNC BALANCE HOURS
+   ===================================================== */
+projectSchema.pre("save", function (next) {
+  this.balanceHours = this.totalEstimatedHours - this.consumedHours;
+  next();
+});
 
 export default mongoose.model("Project", projectSchema);

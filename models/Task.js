@@ -5,14 +5,16 @@ const { Schema } = mongoose;
 
 /**
  * Task Schema
- * - ONLY approved task hours reduce project balance
- * - Attendance is NOT used here
+ * - Supports BOTH legacy & new task systems
+ * - ONLY approved & completed tasks reduce project balance
+ * - Reduction happens ONLY ONCE per task
+ * - Tasks are immutable (no delete)
  */
 const taskSchema = new Schema(
   {
-    /* ===========================
+    /* =====================================================
        PROJECT & USER REFERENCES
-       =========================== */
+       ===================================================== */
     projectId: {
       type: Schema.Types.ObjectId,
       ref: "Project",
@@ -31,12 +33,11 @@ const taskSchema = new Schema(
       required: true,
     },
 
-    /* ===========================
-       ROLE & PHASE CONTROL
-       =========================== */
+    /* =====================================================
+       LEGACY TASK SYSTEM (OPTIONAL)
+       ===================================================== */
     role: {
       type: String,
-      required: true,
       enum: [
         "DEVELOPER",
         "DEVOPS",
@@ -44,21 +45,18 @@ const taskSchema = new Schema(
         "TESTER",
         "PRODUCT_MANAGER",
         "TECH_LEAD",
+        "SUPPORT",
+        "OTHER",
       ],
     },
 
     phase: {
       type: String,
-      required: true,
-      enum: ["DEVELOPMENT", "DEPLOYMENT", "TESTING", "REVIEW"],
+      enum: ["DEVELOPMENT", "DEPLOYMENT", "TESTING", "REVIEW", "COMPLETED"],
     },
 
-    /* ===========================
-       TASK DETAILS
-       =========================== */
     title: {
       type: String,
-      required: true,
     },
 
     description: {
@@ -66,35 +64,59 @@ const taskSchema = new Schema(
       default: "",
     },
 
-    requirementType: {
-      type: String,
-      enum: ["NEW", "OLD", "BUG"],
-      default: "NEW",
-    },
-
-    status: {
-      type: String,
-      enum: ["OPEN", "IN_PROGRESS", "COMPLETED"],
-      default: "OPEN",
-    },
-
-    /* ===========================
-       HOURS & DATE (CORE LOGIC)
-       =========================== */
     hoursWorked: {
       type: Number,
-      required: true,
       min: 0,
     },
 
     workDate: {
       type: Date,
-      required: true,
     },
 
-    /* ===========================
+    /* =====================================================
+       NEW TASK SYSTEM
+       ===================================================== */
+    recentRequirement: {
+      type: String,
+      trim: true,
+    },
+
+    requirementType: {
+      type: String,
+      enum: ["NEW", "OLD", "BUG"],
+      default: "NEW",
+    },
+requirementRole: {
+  type: String,
+  enum: [
+    "DEVELOPER",
+    "DEVOPS", 
+    "QA",
+    "TESTER",
+    "PRODUCT_MANAGER", 
+    "TECH_LEAD",
+    "SUPPORT",
+    "OTHER"
+  ],
+  required: function() {
+    // Required only for new task system tasks
+    return this.recentRequirement || this.estimateHours;
+  }
+},
+    estimateHours: {
+      type: Number,
+      min: 0.5,
+    },
+
+    status: {
+      type: String,
+      enum: ["OPEN", "IN_PROGRESS", "ON_HOLD", "COMPLETED"],
+      default: "OPEN",
+    },
+
+    /* =====================================================
        MANAGER APPROVAL
-       =========================== */
+       ===================================================== */
     approvedByManager: {
       type: Boolean,
       default: false,
@@ -111,9 +133,27 @@ const taskSchema = new Schema(
       default: null,
     },
 
-    /* ===========================
+    /* =====================================================
+       PROJECT BALANCE SAFETY (VERY IMPORTANT)
+       ===================================================== */
+    countedInProject: {
+      type: Boolean,
+      default: false,
+    },
+
+    countedHours: {
+      type: Number,
+      default: 0,
+    },
+
+    countedAt: {
+      type: Date,
+      default: null,
+    },
+
+    /* =====================================================
        OPTIONAL NOTES
-       =========================== */
+       ===================================================== */
     notes: {
       type: String,
       default: "",

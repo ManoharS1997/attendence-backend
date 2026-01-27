@@ -1,4 +1,3 @@
-
 // routes/projectRoutes.js
 import express from "express";
 import Project from "../models/Project.js";
@@ -28,76 +27,6 @@ const getAssignmentUserIdString = (assignment) => {
   return assignment.user.toString();
 };
 
-/**
- * Calculate project hours from approved tasks only (for legacy task system)
- */
-const calculateProjectHoursFromTasks = async (project) => {
-  const tasks = await Task.find({
-    projectId: project._id,
-    approvedByManager: true,
-    workDate: {
-      $gte: project.startDate,
-      $lte: project.endDate,
-    },
-  });
-
-  const roleBreakdown = {};
-  let totalUsedHours = 0;
-
-  for (const task of tasks) {
-    totalUsedHours += task.hoursWorked || 0;
-
-    if (task.role) {
-      if (!roleBreakdown[task.role]) {
-        roleBreakdown[task.role] = 0;
-      }
-      roleBreakdown[task.role] += task.hoursWorked || 0;
-    }
-  }
-
-  const remainingHours = project.totalEstimatedHours - totalUsedHours;
-
-  return {
-    totalEstimatedHours: project.totalEstimatedHours,
-    totalUsedHours,
-    remainingHours,
-    roleBreakdown,
-  };
-};
-
-/**
- * Calculate project hours from estimated hours (for new task system)
- */
-const calculateProjectHoursFromEstimates = async (project) => {
-  const tasks = await Task.find({
-    projectId: project._id,
-    approvedByManager: true,
-  });
-
-  let totalUsedHours = 0;
-  const roleBreakdown = {};
-
-  for (const task of tasks) {
-    totalUsedHours += task.estimateHours || 0;
-    
-    // For new system, you might want to track by requirementType or status
-    const key = task.requirementType || 'UNCATEGORIZED';
-    if (!roleBreakdown[key]) {
-      roleBreakdown[key] = 0;
-    }
-    roleBreakdown[key] += task.estimateHours || 0;
-  }
-
-  const remainingHours = project.totalEstimatedHours - totalUsedHours;
-
-  return {
-    totalEstimatedHours: project.totalEstimatedHours,
-    totalUsedHours,
-    remainingHours,
-    roleBreakdown,
-  };
-};
-
 /* =====================================================
    CREATE PROJECT WITH AUTO-CALCULATION
    ===================================================== */
@@ -116,7 +45,7 @@ router.post(
         totalEstimatedHours, // Can be overridden by manager
         durationMonths,      // Can be overridden by manager
         currentPhase = "PLANNING",
-        status = "ACTIVE",
+        status = "DRAFT",
       } = req.body;
 
       // Validate required fields
@@ -190,7 +119,10 @@ router.post(
         durationMonths: finalDurationMonths,
         currentPhase,
         status,
+        consumedHours: 0,
+        balanceHours: finalTotalHours, // Will be auto-calculated by schema pre-save
         assignments: [],
+        consumptionByRole: [],
       });
 
       // Log creation
@@ -238,13 +170,207 @@ router.post(
       });
     } catch (err) {
       console.error("Create project error:", err);
-      res.status(500).json({ message: "Server error" });
+      
+      if (err.code === 11000) {
+        return res.status(400).json({
+          message: "Project with this name or code already exists"
+        });
+      }
+      
+      res.status(500).json({ message: "Project creation failed" });
     }
   }
 );
 
 /* =====================================================
-   GET ALL PROJECTS WITH HOURS CALCULATION
+   APPROVE PROJECT
+   ===================================================== */
+router.patch(
+  "/:id/approve",
+  authMiddleware,
+  requireRole(["manager"]),
+  async (req, res) => {
+    try {
+      const project = await Project.findById(req.params.id);
+      if (!project) return res.status(404).json({ message: "Project not found" });
+
+      if (project.status === "APPROVED") {
+        return res.status(400).json({ 
+          message: "Project is already approved" 
+        });
+      }
+
+      if (project.status === "ARCHIVED") {
+        return res.status(400).json({ 
+          message: "Cannot approve archived projects" 
+        });
+      }
+
+      project.status = "APPROVED";
+      await project.save();
+
+      // Log approval
+      try {
+        await Log.create({
+          type: "OPERATION",
+          action: "APPROVE_PROJECT",
+          entity: "PROJECT",
+          user: req.user.id,
+          userName: req.user.fullName,
+          userEmail: req.user.email,
+          role: req.user.role,
+          description: `Approved project ${project.name}`,
+          status: "SUCCESS",
+          ipAddress: getClientIp(req),
+          details: {
+            projectId: project._id,
+            previousStatus: "DRAFT",
+          },
+        });
+      } catch (logErr) {
+        console.error("Log APPROVE_PROJECT error:", logErr.message);
+      }
+
+      res.json({ 
+        message: "Project approved", 
+        project 
+      });
+    } catch (err) {
+      console.error("Approve project error:", err);
+      res.status(500).json({ message: "Approval failed" });
+    }
+  }
+);
+// ⬇️⬇️⬇️ ADD REJECT ENDPOINT RIGHT HERE ⬇️⬇️⬇️
+
+/* =====================================================
+   REJECT PROJECT
+   ===================================================== */
+router.patch(
+  "/:id/reject",
+  authMiddleware,
+  requireRole(["manager"]),
+  async (req, res) => {
+    try {
+      const project = await Project.findById(req.params.id);
+      if (!project) return res.status(404).json({ message: "Project not found" });
+
+      if (project.status === "REJECTED") {
+        return res.status(400).json({ 
+          message: "Project is already rejected" 
+        });
+      }
+
+      if (project.status === "ARCHIVED") {
+        return res.status(400).json({ 
+          message: "Cannot reject archived projects" 
+        });
+      }
+
+      project.status = "REJECTED";
+      await project.save();
+
+      // Log rejection
+      try {
+        await Log.create({
+          type: "OPERATION",
+          action: "REJECT_PROJECT",
+          entity: "PROJECT",
+          user: req.user.id,
+          userName: req.user.fullName,
+          userEmail: req.user.email,
+          role: req.user.role,
+          description: `Rejected project ${project.name}`,
+          status: "SUCCESS",
+          ipAddress: getClientIp(req),
+          details: {
+            projectId: project._id,
+            previousStatus: project.status,
+          },
+        });
+      } catch (logErr) {
+        console.error("Log REJECT_PROJECT error:", logErr.message);
+      }
+
+      res.json({ 
+        message: "Project rejected", 
+        project 
+      });
+    } catch (err) {
+      console.error("Reject project error:", err);
+      res.status(500).json({ message: "Rejection failed" });
+    }
+  }
+);
+
+// ⬆️⬆️⬆️ ADD REJECT ENDPOINT RIGHT HERE ⬆️⬆️⬆️
+
+/* =====================================================
+   COMPLETE PROJECT (WITH BALANCE CHECK)
+   ===================================================== */
+router.patch(
+  "/:id/complete",
+  authMiddleware,
+  requireRole(["manager"]),
+  async (req, res) => {
+    try {
+      const project = await Project.findById(req.params.id);
+      if (!project) return res.status(404).json({ message: "Project not found" });
+
+      if (project.status !== "APPROVED") {
+        return res.status(400).json({
+          message: "Project must be approved before completion"
+        });
+      }
+
+      if (project.balanceHours < 0) {
+        return res.status(400).json({
+          message: "Project has negative balance",
+          balanceHours: project.balanceHours,
+          consumptionByRole: project.consumptionByRole,
+        });
+      }
+
+      project.status = "COMPLETED";
+      project.completedAt = new Date();
+      await project.save();
+
+      // Log completion
+      try {
+        await Log.create({
+          type: "OPERATION",
+          action: "COMPLETE_PROJECT",
+          entity: "PROJECT",
+          user: req.user.id,
+          userName: req.user.fullName,
+          userEmail: req.user.email,
+          role: req.user.role,
+          description: `Completed project ${project.name}`,
+          status: "SUCCESS",
+          ipAddress: getClientIp(req),
+          details: {
+            projectId: project._id,
+            balanceHours: project.balanceHours,
+            consumedHours: project.consumedHours,
+          },
+        });
+      } catch (logErr) {
+        console.error("Log COMPLETE_PROJECT error:", logErr.message);
+      }
+
+      res.json({ 
+        message: "Project completed", 
+        project 
+      });
+    } catch (err) {
+      console.error("Complete project error:", err);
+      res.status(500).json({ message: "Completion failed" });
+    }
+  }
+);
+
+/* =====================================================
+   GET ALL PROJECTS (MANAGER/ADMIN VIEW)
    ===================================================== */
 router.get(
   "/",
@@ -256,10 +382,10 @@ router.get(
         .populate("assignments.user", "fullName email role")
         .sort({ createdAt: -1 });
 
-      // Calculate hours for each project
+      // Format response with working days calculation (for info only - doesn't affect balance)
       const response = await Promise.all(
         projects.map(async (project) => {
-          // Format dates for calculation
+          // Format dates for working days calculation (display purposes only)
           const formatDate = (date) => {
             if (!date) return '';
             const d = new Date(date);
@@ -278,16 +404,12 @@ router.get(
           }
 
           const calculatedTotalHours = workingDays * 8;
-          const hours = await calculateProjectHoursFromTasks(project);
-          const newSystemHours = await calculateProjectHoursFromEstimates(project);
 
           return {
             ...project.toObject(),
             workingDays,
             calculatedTotalHours,
             calculationDifference: project.totalEstimatedHours - calculatedTotalHours,
-            hours, // Legacy system hours
-            newSystemHours, // New system hours
           };
         })
       );
@@ -332,13 +454,11 @@ router.get("/my", authMiddleware, async (req, res) => {
         }
 
         const calculatedTotalHours = workingDays * 8;
-        const hours = await calculateProjectHoursFromTasks(project);
 
         return {
           ...project.toObject(),
           workingDays,
           calculatedTotalHours,
-          hours,
         };
       })
     );
@@ -371,7 +491,7 @@ router.get("/:id", authMiddleware, async (req, res) => {
       return res.status(403).json({ message: "Access denied" });
     }
 
-    // Calculate statistics
+    // Calculate working days (for display purposes only)
     const formatDate = (date) => {
       if (!date) return '';
       const d = new Date(date);
@@ -390,19 +510,19 @@ router.get("/:id", authMiddleware, async (req, res) => {
     }
 
     const calculatedTotalHours = workingDays * 8;
-    const hours = await calculateProjectHoursFromTasks(project);
+    
+    // Get recent tasks (without recalculating hours)
     const tasks = await Task.find({ projectId: project._id })
       .populate("assignedUserId", "fullName email")
       .populate("createdByUserId", "fullName email")
       .sort({ createdAt: -1 })
-      .limit(50); // Limit recent tasks
+      .limit(50);
 
     res.json({
       ...project.toObject(),
       workingDays,
       calculatedTotalHours,
       calculationDifference: project.totalEstimatedHours - calculatedTotalHours,
-      hours,
       recentTasks: tasks,
     });
   } catch (err) {
@@ -425,9 +545,15 @@ router.patch(
         return res.status(404).json({ message: "Project not found" });
       }
 
+      if (project.status === "ARCHIVED") {
+        return res.status(400).json({ 
+          message: "Cannot update archived projects" 
+        });
+      }
+
       const updates = { ...req.body };
 
-      // If dates are being updated, recalculate
+      // If dates are being updated, recalculate totalEstimatedHours if not explicitly set
       if (updates.startDate || updates.endDate) {
         const newStartDate = updates.startDate ? new Date(updates.startDate) : project.startDate;
         const newEndDate = updates.endDate ? new Date(updates.endDate) : project.endDate;
@@ -450,7 +576,9 @@ router.patch(
         // Update calculated fields if not explicitly set
         if (!updates.totalEstimatedHours) {
           updates.totalEstimatedHours = calculatedTotalHours;
+          // NOTE: balanceHours will be auto-calculated by schema pre-save
         }
+
         if (!updates.durationMonths) {
           updates.durationMonths = calculatedDurationMonths;
         }
@@ -459,10 +587,18 @@ router.patch(
         updates.endDate = newEndDate;
       }
 
+      // If totalEstimatedHours is being updated, DO NOT manually update balanceHours
+      // The schema pre-save hook will handle it automatically
+      if (updates.totalEstimatedHours !== undefined) {
+        // Just update totalEstimatedHours, schema will handle the rest
+        // No manual balanceHours calculation needed
+      }
+
+      // Update the project (schema pre-save will handle balanceHours)
       const updatedProject = await Project.findByIdAndUpdate(
         req.params.id,
         updates,
-        { new: true }
+        { new: true, runValidators: true }
       ).populate("assignments.user");
 
       // Log update
@@ -507,7 +643,13 @@ router.post(
       const { userId, role } = req.body;
 
       const project = await Project.findById(req.params.id);
-      if (!project) return res.status(404).json({ message: "Not found" });
+      if (!project) return res.status(404).json({ message: "Project not found" });
+
+      if (project.status === "ARCHIVED") {
+        return res.status(400).json({ 
+          message: "Cannot assign to archived projects" 
+        });
+      }
 
       const employee = await User.findById(userId);
       if (!employee || employee.role !== "employee") {
@@ -573,7 +715,7 @@ router.delete(
         "fullName email"
       );
       
-      if (!project) return res.status(404).json({ message: "Not found" });
+      if (!project) return res.status(404).json({ message: "Project not found" });
 
       const removed = project.assignments.find(
         (a) => getAssignmentUserIdString(a) === req.params.userId
@@ -639,6 +781,12 @@ router.post(
         return res.status(404).json({ message: "Project not found" });
       }
 
+      if (project.status === "ARCHIVED") {
+        return res.status(400).json({ 
+          message: "Project is already archived" 
+        });
+      }
+
       project.status = "ARCHIVED";
       project.archivedAt = new Date();
       await project.save();
@@ -667,6 +815,59 @@ router.post(
       res.json(project);
     } catch (err) {
       console.error("Archive project error:", err);
+      res.status(500).json({ message: "Server error" });
+    }
+  }
+);
+
+/* =====================================================
+   UNARCHIVE PROJECT
+   ===================================================== */
+router.post(
+  "/:id/unarchive",
+  authMiddleware,
+  requireRole(["manager"]),
+  async (req, res) => {
+    try {
+      const project = await Project.findById(req.params.id);
+      if (!project) {
+        return res.status(404).json({ message: "Project not found" });
+      }
+
+      if (project.status !== "ARCHIVED") {
+        return res.status(400).json({ 
+          message: "Project is not archived" 
+        });
+      }
+
+      project.status = "DRAFT";
+      project.archivedAt = null;
+      await project.save();
+
+      // Log unarchiving
+      try {
+        await Log.create({
+          type: "OPERATION",
+          action: "UNARCHIVE_PROJECT",
+          entity: "PROJECT",
+          user: req.user.id,
+          userName: req.user.fullName,
+          userEmail: req.user.email,
+          role: req.user.role,
+          description: `Unarchived project ${project.name}`,
+          status: "SUCCESS",
+          ipAddress: getClientIp(req),
+          details: {
+            projectId: project._id,
+          },
+        });
+      } catch (logErr) {
+        console.error("Log UNARCHIVE_PROJECT error:", logErr.message);
+      }
+
+      res.json(project);
+    } catch (err) {
+      console.error("Unarchive project error:", err);
       res.status(500).json({ message: "Server error" });
     }
   }
