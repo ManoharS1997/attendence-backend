@@ -87,14 +87,34 @@ const validateTaskDates = (taskDate, projectStart, projectEnd) => {
  * Apply task hours to project balance
  */
 const applyTaskToProject = async (task, project) => {
+  // SAFETY: do not double count
   if (task.countedInProject) return;
 
-  // ✅ FIX: Get hours from correct field
-  const hours = task.estimateHours ?? task.hoursWorked ?? 0;
-  
-  // ✅ FIX: Get role from correct field (NEW TASK SYSTEM VS LEGACY)
-  const taskRole = task.requirementRole ?? task.role ?? "DEVELOPER";
+  // RULE 1: Developer tasks must NOT reduce project balance
+  const taskRole = (task.requirementRole ?? task.role ?? "").toUpperCase();
+  if (taskRole === "DEVELOPER") return;
 
+  // RULE 2: Task must be COMPLETED
+  const isCompleted =
+    task.status === "COMPLETED" ||
+    (task.phase && task.phase === "COMPLETED");
+
+  if (!isCompleted) return;
+
+  // RULE 3: Task date must be within project duration
+  const taskDate = task.workDate || task.createdAt;
+  if (taskDate) {
+    const td = new Date(taskDate);
+    const ps = new Date(project.startDate);
+    const pe = new Date(project.endDate);
+    if (td < ps || td > pe) return;
+  }
+
+  // RULE 4: Get hours safely
+  const hours = task.estimateHours ?? task.hoursWorked ?? 0;
+  if (hours <= 0) return;
+
+  // RULE 5: Apply hours to project
   project.consumedHours += hours;
 
   const roleEntry = project.consumptionByRole.find(
@@ -106,17 +126,19 @@ const applyTaskToProject = async (task, project) => {
   } else {
     project.consumptionByRole.push({
       role: taskRole,
-      consumedHours: hours,
+      consumedHours: hours
     });
   }
 
   await project.save();
 
+  // RULE 6: Mark task as counted
   task.countedInProject = true;
   task.countedHours = hours;
   task.countedAt = new Date();
   await task.save();
 };
+
 
 /**
  * Revert task hours from project balance
@@ -301,23 +323,20 @@ router.post("/", async (req, res) => {
     const isNewSystem = recentRequirement !== undefined || req.body.requirement !== undefined;
     
     if (isNewSystem) {
-      // New task system
       Object.assign(taskData, {
-        recentRequirement: 
-          recentRequirement?.trim() || 
-          req.body.requirement?.trim() || 
-          "Requirement not specified",
+        recentRequirement: recentRequirement?.trim() || "Requirement not specified",
         requirementType: requirementType || "NEW",
         status: status || "OPEN",
         scope: scope || "AGREED",
         notes: notes || "",
-        discussedDate: discussedDate || null,
-        originalClosureDate: originalClosureDate || null,
-        estimatedDate: estimatedDate || null,
+        discussedDate,
+        originalClosureDate,
+        estimatedDate,
         noOfDays: workingDays,
-        estimateHours: Math.max(Number(estimateHours) || 8, 0.5), // Minimum 0.5 hours
+        estimateHours: Math.max(Number(estimateHours) || 8, 0.5),
         clientPriority: clientPriority || "P3",
         prioritySource: (prioritySource || "CLIENT").toUpperCase(),
+        role: normalizedRequirementRole, // ✅ ADDED: Include role for new system
       });
     } else {
       // Legacy task system
@@ -371,9 +390,24 @@ router.post("/", async (req, res) => {
    ===================================================== */
 router.get("/my", async (req, res) => {
   try {
-    const query = req.user.role === "employee"
-      ? { assignedUserId: req.user._id }
-      : {};
+    let query = {};
+
+    if (req.user.role === "employee") {
+      query = { assignedUserId: req.user._id };
+    }
+
+    if (req.user.role === "manager") {
+      query = {
+        $or: [
+          { assignedUserId: req.user._id },
+          { createdByUserId: req.user._id }
+        ]
+      };
+    }
+
+    if (req.user.role === "admin") {
+      query = { createdByUserId: req.user._id };
+    }
 
     const tasks = await Task.find(query)
       .populate("projectId", "name code currentPhase status")
@@ -382,19 +416,13 @@ router.get("/my", async (req, res) => {
       .populate("approvedBy", "fullName email")
       .sort({ createdAt: -1 });
 
-    // Calculate statistics
-    const stats = {
-      total: tasks.length,
-      approved: tasks.filter(t => t.approvedByManager).length,
-      pending: tasks.filter(t => !t.approvedByManager).length,
-    };
-
-    res.json({ tasks, stats });
+    res.json({ tasks });
   } catch (err) {
     console.error("Fetch my tasks error:", err);
     res.status(500).json({ message: "Error fetching tasks" });
   }
 });
+
 
 /* =====================================================
    GET PROJECT TASKS

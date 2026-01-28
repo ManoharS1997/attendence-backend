@@ -36,19 +36,22 @@ const taskSchema = new Schema(
     /* =====================================================
        LEGACY TASK SYSTEM (OPTIONAL)
        ===================================================== */
-    role: {
-      type: String,
-      enum: [
-        "DEVELOPER",
-        "DEVOPS",
-        "QA",
-        "TESTER",
-        "PRODUCT_MANAGER",
-        "TECH_LEAD",
-        "SUPPORT",
-        "OTHER",
-      ],
-    },
+  role: {
+  type: String,
+  enum: [
+    "DEVELOPER",
+    "DEVOPS",
+    "QA",
+    "TESTER",
+    "PRODUCT_MANAGER",
+    "TECH_LEAD",
+    "SUPPORT",
+    "OTHER",
+  ],
+  required: false   // ✅ MUST BE FALSE
+},
+
+
 
     phase: {
       type: String,
@@ -90,19 +93,22 @@ requirementRole: {
   type: String,
   enum: [
     "DEVELOPER",
-    "DEVOPS", 
+    "DEVOPS",
     "QA",
     "TESTER",
-    "PRODUCT_MANAGER", 
+    "PRODUCT_MANAGER",
+    "PROJECT_MANAGER",
     "TECH_LEAD",
+    "ANALYST",
+    "ARCHITECT",
     "SUPPORT",
+    "ADMINISTRATOR",
     "OTHER"
   ],
-  required: function() {
-    // Required only for new task system tasks
-    return this.recentRequirement || this.estimateHours;
-  }
+  required: true
 },
+
+
     estimateHours: {
       type: Number,
       min: 0.5,
