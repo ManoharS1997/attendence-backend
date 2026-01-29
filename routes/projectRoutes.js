@@ -120,9 +120,10 @@ router.post(
         currentPhase,
         status,
         consumedHours: 0,
-        balanceHours: finalTotalHours, // Will be auto-calculated by schema pre-save
+        balanceHours: finalTotalHours,
         assignments: [],
         consumptionByRole: [],
+        manager: req.user.id,
       });
 
       // Log creation
@@ -183,6 +184,536 @@ router.post(
 );
 
 /* =====================================================
+   GET MY PROJECTS (EMPLOYEE VIEW) - FIXED WITH ROLE DISPLAY
+   ===================================================== */
+router.get("/my", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const userRole = req.user.role;
+
+    let projects;
+    
+    if (userRole === "employee") {
+      // Employee: Get projects they're assigned to
+      projects = await Project.find({
+        "assignments.user": userId,
+        status: { $ne: "ARCHIVED" }
+      })
+      .populate({
+        path: "assignments.user",
+        select: "fullName email role"
+      })
+      .populate("manager", "fullName email")
+      .sort({ createdAt: -1 });
+    } else if (userRole === "manager") {
+      // Manager: Get projects they manage
+      projects = await Project.find({
+        manager: userId,
+        status: { $ne: "ARCHIVED" }
+      })
+      .populate("assignments.user", "fullName email role")
+      .populate("manager", "fullName email")
+      .sort({ createdAt: -1 });
+    } else if (userRole === "admin") {
+      // Admin: Get all non-archived projects
+      projects = await Project.find({
+        status: { $ne: "ARCHIVED" }
+      })
+      .populate("assignments.user", "fullName email role")
+      .populate("manager", "fullName email")
+      .sort({ createdAt: -1 });
+    } else {
+      return res.status(403).json({ message: "Unauthorized access" });
+    }
+
+    // Format response with proper role display
+    const response = await Promise.all(
+      projects.map(async (project) => {
+        const formatDate = (date) => {
+          if (!date) return '';
+          const d = new Date(date);
+          const dd = String(d.getDate()).padStart(2, '0');
+          const mm = String(d.getMonth() + 1).padStart(2, '0');
+          const yyyy = d.getFullYear();
+          return `${dd}-${mm}-${yyyy}`;
+        };
+
+        const startStr = formatDate(project.startDate);
+        const endStr = formatDate(project.endDate);
+        
+        let workingDays = 0;
+        if (startStr && endStr) {
+          workingDays = await countWorkingDaysInRange(startStr, endStr);
+        }
+
+        const calculatedTotalHours = workingDays * 8;
+
+        // Find user's role in project
+        let myRole = null;
+        let myAssignment = null;
+
+        if (userRole === "employee") {
+          // For employees, find their specific assignment
+          myAssignment = project.assignments.find(
+            assignment => getAssignmentUserIdString(assignment) === userId.toString()
+          );
+          myRole = myAssignment?.role || null;
+        } else if (userRole === "manager") {
+          // For managers, check if they're the project manager
+          if (project.manager && project.manager._id.toString() === userId.toString()) {
+            myRole = "Manager";
+          } else {
+            // Check if manager is also assigned as an employee
+            myAssignment = project.assignments.find(
+              assignment => getAssignmentUserIdString(assignment) === userId.toString()
+            );
+            myRole = myAssignment?.role || null;
+          }
+        } else if (userRole === "admin") {
+          myRole = "Admin";
+        }
+
+        // Format project for response
+        const projectObj = project.toObject();
+        
+        return {
+          _id: projectObj._id,
+          name: projectObj.name,
+          code: projectObj.code,
+          description: projectObj.description,
+          status: projectObj.status,
+          startDate: projectObj.startDate,
+          endDate: projectObj.endDate,
+          totalEstimatedHours: projectObj.totalEstimatedHours,
+          balanceHours: projectObj.balanceHours,
+          consumedHours: projectObj.consumedHours,
+          durationMonths: projectObj.durationMonths,
+          manager: projectObj.manager,
+          assignments: projectObj.assignments,
+          workingDays,
+          calculatedTotalHours,
+          calculationDifference: projectObj.totalEstimatedHours - calculatedTotalHours,
+          myRole: myRole || "Not assigned", // Ensure "Not assigned" is only for employees without role
+          canCreateTask: myRole !== null && projectObj.status === "APPROVED"
+        };
+      })
+    );
+
+    res.json(response);
+  } catch (err) {
+    console.error("My projects error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+/* =====================================================
+   GET ALL PROJECTS (MANAGER/ADMIN VIEW) - ENHANCED
+   ===================================================== */
+router.get(
+  "/",
+  authMiddleware,
+  requireRole(["manager", "admin"]),
+  async (req, res) => {
+    try {
+      let query = {};
+      
+      if (req.user.role === "manager") {
+        // Manager sees only their projects
+        query = { manager: req.user.id };
+      }
+      // Admin sees all projects
+
+      const projects = await Project.find(query)
+        .populate("assignments.user", "fullName email role employeeId")
+        .populate("manager", "fullName email")
+        .sort({ createdAt: -1 });
+
+      // Format response with working days calculation
+      const response = await Promise.all(
+        projects.map(async (project) => {
+          const formatDate = (date) => {
+            if (!date) return '';
+            const d = new Date(date);
+            const dd = String(d.getDate()).padStart(2, '0');
+            const mm = String(d.getMonth() + 1).padStart(2, '0');
+            const yyyy = d.getFullYear();
+            return `${dd}-${mm}-${yyyy}`;
+          };
+
+          const startStr = formatDate(project.startDate);
+          const endStr = formatDate(project.endDate);
+          
+          let workingDays = 0;
+          if (startStr && endStr) {
+            workingDays = await countWorkingDaysInRange(startStr, endStr);
+          }
+
+          const calculatedTotalHours = workingDays * 8;
+
+          return {
+            ...project.toObject(),
+            workingDays,
+            calculatedTotalHours,
+            calculationDifference: project.totalEstimatedHours - calculatedTotalHours,
+          };
+        })
+      );
+
+      res.json(response);
+    } catch (err) {
+      console.error("List projects error:", err);
+      res.status(500).json({ message: "Server error" });
+    }
+  }
+);
+
+/* =====================================================
+   GET SINGLE PROJECT DETAILS - FIXED ROLE DISPLAY
+   ===================================================== */
+router.get("/:id", authMiddleware, async (req, res) => {
+  try {
+    const project = await Project.findById(req.params.id)
+      .populate("assignments.user", "fullName email role department employeeId")
+      .populate("manager", "fullName email");
+
+    if (!project) {
+      return res.status(404).json({ message: "Project not found" });
+    }
+
+    const userId = req.user.id;
+    const userRole = req.user.role;
+
+    // Check access permissions
+    let hasAccess = false;
+    
+    if (userRole === "admin") {
+      hasAccess = true;
+    } else if (userRole === "manager") {
+      // Manager can access if they manage the project or are assigned to it
+      hasAccess = project.manager && project.manager._id.toString() === userId.toString();
+      if (!hasAccess) {
+        // Check if manager is assigned as an employee
+        const isAssigned = project.assignments.some(
+          assignment => getAssignmentUserIdString(assignment) === userId.toString()
+        );
+        hasAccess = isAssigned;
+      }
+    } else if (userRole === "employee") {
+      // Employee can access only if assigned
+      const isAssigned = project.assignments.some(
+        assignment => getAssignmentUserIdString(assignment) === userId.toString()
+      );
+      hasAccess = isAssigned;
+      
+      if (!hasAccess) {
+        return res.status(403).json({ 
+          message: "You are not assigned to this project. Please contact your manager to get assigned a role before creating tasks." 
+        });
+      }
+    }
+
+    if (!hasAccess) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    // Calculate working days for display
+    const formatDate = (date) => {
+      if (!date) return '';
+      const d = new Date(date);
+      const dd = String(d.getDate()).padStart(2, '0');
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const yyyy = d.getFullYear();
+      return `${dd}-${mm}-${yyyy}`;
+    };
+
+    const startStr = formatDate(project.startDate);
+    const endStr = formatDate(project.endDate);
+    
+    let workingDays = 0;
+    if (startStr && endStr) {
+      workingDays = await countWorkingDaysInRange(startStr, endStr);
+    }
+
+    const calculatedTotalHours = workingDays * 8;
+    
+    // Get project tasks
+    const tasks = await Task.find({ projectId: project._id })
+      .populate("assignedUserId", "fullName email employeeId")
+      .populate("createdByUserId", "fullName email employeeId")
+      .sort({ createdAt: -1 })
+      .limit(50);
+
+    // Determine user's role in this project
+    let myRole = null;
+    let myAssignment = null;
+
+    if (userRole === "employee") {
+      myAssignment = project.assignments.find(
+        assignment => getAssignmentUserIdString(assignment) === userId.toString()
+      );
+      myRole = myAssignment?.role || null;
+    } else if (userRole === "manager") {
+      if (project.manager && project.manager._id.toString() === userId.toString()) {
+        myRole = "Manager";
+      } else {
+        myAssignment = project.assignments.find(
+          assignment => getAssignmentUserIdString(assignment) === userId.toString()
+        );
+        myRole = myAssignment?.role || null;
+      }
+    } else if (userRole === "admin") {
+      myRole = "Admin";
+    }
+
+    // Get project statistics
+    const stats = {
+      totalTasks: tasks.length,
+      openTasks: tasks.filter(t => t.status === "OPEN").length,
+      inProgressTasks: tasks.filter(t => t.status === "IN_PROGRESS").length,
+      completedTasks: tasks.filter(t => t.status === "COMPLETED").length,
+      totalEstimatedHours: tasks.reduce((sum, task) => sum + (task.estimateHours || 0), 0)
+    };
+
+    res.json({
+      ...project.toObject(),
+      workingDays,
+      calculatedTotalHours,
+      calculationDifference: project.totalEstimatedHours - calculatedTotalHours,
+      recentTasks: tasks,
+      myRole: myRole || "Not assigned", // Important: This fixes the frontend display
+      myAssignment,
+      stats,
+      canCreateTask: myRole !== null && project.status === "APPROVED"
+    });
+  } catch (err) {
+    console.error("Get project error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+/* =====================================================
+   GET PROJECTS FOR TASK CREATION DROPDOWN
+   ===================================================== */
+router.get("/for-task-creation", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const userRole = req.user.role;
+
+    let query = { status: "APPROVED" };
+    
+    if (userRole === "employee") {
+      query["assignments.user"] = userId;
+    } else if (userRole === "manager") {
+      query.manager = userId;
+    }
+    // Admin doesn't create tasks, so not included
+
+    const projects = await Project.find(query)
+      .select("name code status assignments manager")
+      .populate("assignments.user", "fullName email")
+      .populate("manager", "fullName email")
+      .sort({ name: 1 });
+
+    // Format projects for dropdown
+    const formattedProjects = projects.map(project => {
+      let myRole = null;
+      
+      if (userRole === "employee") {
+        const assignment = project.assignments.find(
+          a => getAssignmentUserIdString(a) === userId.toString()
+        );
+        myRole = assignment?.role || null;
+      } else if (userRole === "manager") {
+        myRole = "Manager";
+      }
+
+      return {
+        _id: project._id,
+        name: project.name,
+        code: project.code,
+        status: project.status,
+        myRole: myRole || "Not assigned",
+        hasRole: myRole !== null,
+        displayText: `${project.name} (${project.code}) - ${myRole || "No role"}`
+      };
+    });
+
+    // Filter out projects where employee has no role
+    const filteredProjects = userRole === "employee" 
+      ? formattedProjects.filter(p => p.hasRole)
+      : formattedProjects;
+
+    res.json(filteredProjects);
+  } catch (err) {
+    console.error("Get projects for task creation error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+/* =====================================================
+   GET PROJECT BALANCE DETAILS
+   ===================================================== */
+router.get("/:id/balance", authMiddleware, async (req, res) => {
+  try {
+    const project = await Project.findById(req.params.id)
+      .select("name code totalEstimatedHours balanceHours consumedHours monthlyConsumption consumptionByRole");
+
+    if (!project) {
+      return res.status(404).json({ message: "Project not found" });
+    }
+
+    // Get all tasks for this project
+    const tasks = await Task.find({ projectId: project._id })
+      .select("estimateHours status month year assignedUserRole")
+      .sort({ month: 1, year: 1 });
+
+    // Calculate consumption by month
+    const monthlyConsumption = {};
+    tasks.forEach(task => {
+      if (task.status === "COMPLETED") {
+        const key = `${task.year}-${task.month}`;
+        if (!monthlyConsumption[key]) {
+          monthlyConsumption[key] = {
+            year: task.year,
+            month: task.month,
+            consumedHours: 0
+          };
+        }
+        monthlyConsumption[key].consumedHours += task.estimateHours || 0;
+      }
+    });
+
+    const monthlyData = Object.values(monthlyConsumption);
+
+    res.json({
+      projectName: project.name,
+      projectCode: project.code,
+      totalEstimatedHours: project.totalEstimatedHours,
+      balanceHours: project.balanceHours,
+      consumedHours: project.consumedHours,
+      monthlyConsumption: monthlyData,
+      consumptionByRole: project.consumptionByRole || [],
+      tasksCount: tasks.length,
+      completedTasks: tasks.filter(t => t.status === "COMPLETED").length
+    });
+  } catch (err) {
+    console.error("Get project balance error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+/* =====================================================
+   ASSIGN EMPLOYEE TO PROJECT - ENHANCED
+   ===================================================== */
+router.post(
+  "/:id/assign",
+  authMiddleware,
+  requireRole(["manager"]),
+  async (req, res) => {
+    try {
+      const { userId, role } = req.body;
+
+      if (!userId || !role) {
+        return res.status(400).json({ 
+          message: "userId and role are required" 
+        });
+      }
+
+      const project = await Project.findById(req.params.id);
+      if (!project) return res.status(404).json({ message: "Project not found" });
+
+      // Check if user is the project manager
+      if (project.manager.toString() !== req.user.id.toString()) {
+        return res.status(403).json({ 
+          message: "You are not the manager of this project" 
+        });
+      }
+
+      if (project.status === "ARCHIVED") {
+        return res.status(400).json({ 
+          message: "Cannot assign to archived projects" 
+        });
+      }
+
+      const employee = await User.findById(userId);
+      if (!employee) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      // Check if already assigned
+      const alreadyAssigned = project.assignments.find(
+        assignment => getAssignmentUserIdString(assignment) === userId.toString()
+      );
+      
+      if (alreadyAssigned) {
+        // Update existing role
+        alreadyAssigned.role = role;
+        const now = new Date();
+        alreadyAssigned.startMonth = now.getMonth() + 1;
+        alreadyAssigned.startYear = now.getFullYear();
+        alreadyAssigned.endMonth = null;
+        alreadyAssigned.endYear = null;
+      } else {
+        // Add new assignment
+        const now = new Date();
+        project.assignments.push({
+          user: userId,
+          role,
+          startMonth: now.getMonth() + 1,
+          startYear: now.getFullYear(),
+        });
+      }
+
+      await project.save();
+
+      const populated = await Project.findById(project._id)
+        .populate("assignments.user", "fullName email role employeeId")
+        .populate("manager", "fullName email");
+
+      // Log assignment
+      try {
+        await Log.create({
+          type: "OPERATION",
+          action: "ASSIGN_PROJECT",
+          entity: "PROJECT",
+          user: req.user.id,
+          userName: req.user.fullName,
+          userEmail: req.user.email,
+          role: req.user.role,
+          description: `Assigned ${employee.fullName} to project ${project.name} as ${role}`,
+          status: "SUCCESS",
+          ipAddress: getClientIp(req),
+          details: {
+            projectId: project._id,
+            employeeId: employee._id,
+            employeeEmail: employee.email,
+            assignedRole: role,
+          },
+        });
+      } catch (logErr) {
+        console.error("Log ASSIGN_PROJECT error:", logErr.message);
+      }
+
+      res.json({
+        message: alreadyAssigned ? "Role updated" : "Employee assigned",
+        project: populated,
+        assignment: {
+          userId,
+          role,
+          employeeName: employee.fullName,
+          employeeEmail: employee.email
+        }
+      });
+    } catch (err) {
+      console.error("Assign project error:", err);
+      res.status(500).json({ message: "Server error" });
+    }
+  }
+);
+
+// ... REST OF THE CODE REMAINS THE SAME (APPROVE, REJECT, COMPLETE, UPDATE, UNASSIGN, ARCHIVE, UNARCHIVE) ...
+
+/* =====================================================
    APPROVE PROJECT
    ===================================================== */
 router.patch(
@@ -193,6 +724,13 @@ router.patch(
     try {
       const project = await Project.findById(req.params.id);
       if (!project) return res.status(404).json({ message: "Project not found" });
+
+      // Check if user is the project manager
+      if (project.manager.toString() !== req.user.id.toString()) {
+        return res.status(403).json({ 
+          message: "You are not the manager of this project" 
+        });
+      }
 
       if (project.status === "APPROVED") {
         return res.status(400).json({ 
@@ -241,7 +779,6 @@ router.patch(
     }
   }
 );
-// ⬇️⬇️⬇️ ADD REJECT ENDPOINT RIGHT HERE ⬇️⬇️⬇️
 
 /* =====================================================
    REJECT PROJECT
@@ -254,6 +791,13 @@ router.patch(
     try {
       const project = await Project.findById(req.params.id);
       if (!project) return res.status(404).json({ message: "Project not found" });
+
+      // Check if user is the project manager
+      if (project.manager.toString() !== req.user.id.toString()) {
+        return res.status(403).json({ 
+          message: "You are not the manager of this project" 
+        });
+      }
 
       if (project.status === "REJECTED") {
         return res.status(400).json({ 
@@ -303,10 +847,8 @@ router.patch(
   }
 );
 
-// ⬆️⬆️⬆️ ADD REJECT ENDPOINT RIGHT HERE ⬆️⬆️⬆️
-
 /* =====================================================
-   COMPLETE PROJECT (WITH BALANCE CHECK)
+   COMPLETE PROJECT (WITH BALANCE CHECK & OVERRUN HANDLING)
    ===================================================== */
 router.patch(
   "/:id/complete",
@@ -314,8 +856,17 @@ router.patch(
   requireRole(["manager"]),
   async (req, res) => {
     try {
+      const { overrunReason } = req.body;
       const project = await Project.findById(req.params.id);
+      
       if (!project) return res.status(404).json({ message: "Project not found" });
+
+      // Check if user is the project manager
+      if (project.manager.toString() !== req.user.id.toString()) {
+        return res.status(403).json({ 
+          message: "You are not the manager of this project" 
+        });
+      }
 
       if (project.status !== "APPROVED") {
         return res.status(400).json({
@@ -323,12 +874,19 @@ router.patch(
         });
       }
 
+      // Handle negative balance with overrun reason
       if (project.balanceHours < 0) {
-        return res.status(400).json({
-          message: "Project has negative balance",
-          balanceHours: project.balanceHours,
-          consumptionByRole: project.consumptionByRole,
-        });
+        if (!overrunReason || overrunReason.trim().length < 10) {
+          return res.status(400).json({
+            message: "Project has negative balance. Please provide a reason (minimum 10 characters) for the overrun.",
+            balanceHours: project.balanceHours,
+            requiresReason: true
+          });
+        }
+        
+        // Save overrun reason to project
+        project.overrunReason = overrunReason.trim();
+        project.overrunAt = new Date();
       }
 
       project.status = "COMPLETED";
@@ -352,6 +910,8 @@ router.patch(
             projectId: project._id,
             balanceHours: project.balanceHours,
             consumedHours: project.consumedHours,
+            hadOverrun: project.balanceHours < 0,
+            overrunReason: project.overrunReason || null,
           },
         });
       } catch (logErr) {
@@ -359,7 +919,9 @@ router.patch(
       }
 
       res.json({ 
-        message: "Project completed", 
+        message: project.balanceHours < 0 
+          ? "Project completed (with overrun recorded)" 
+          : "Project completed",
         project 
       });
     } catch (err) {
@@ -368,168 +930,6 @@ router.patch(
     }
   }
 );
-
-/* =====================================================
-   GET ALL PROJECTS (MANAGER/ADMIN VIEW)
-   ===================================================== */
-router.get(
-  "/",
-  authMiddleware,
-  requireRole(["manager", "admin"]),
-  async (req, res) => {
-    try {
-      const projects = await Project.find()
-        .populate("assignments.user", "fullName email role")
-        .sort({ createdAt: -1 });
-
-      // Format response with working days calculation (for info only - doesn't affect balance)
-      const response = await Promise.all(
-        projects.map(async (project) => {
-          // Format dates for working days calculation (display purposes only)
-          const formatDate = (date) => {
-            if (!date) return '';
-            const d = new Date(date);
-            const dd = String(d.getDate()).padStart(2, '0');
-            const mm = String(d.getMonth() + 1).padStart(2, '0');
-            const yyyy = d.getFullYear();
-            return `${dd}-${mm}-${yyyy}`;
-          };
-
-          const startStr = formatDate(project.startDate);
-          const endStr = formatDate(project.endDate);
-          
-          let workingDays = 0;
-          if (startStr && endStr) {
-            workingDays = await countWorkingDaysInRange(startStr, endStr);
-          }
-
-          const calculatedTotalHours = workingDays * 8;
-
-          return {
-            ...project.toObject(),
-            workingDays,
-            calculatedTotalHours,
-            calculationDifference: project.totalEstimatedHours - calculatedTotalHours,
-          };
-        })
-      );
-
-      res.json(response);
-    } catch (err) {
-      console.error("List projects error:", err);
-      res.status(500).json({ message: "Server error" });
-    }
-  }
-);
-
-/* =====================================================
-   GET MY PROJECTS (EMPLOYEE VIEW)
-   ===================================================== */
-router.get("/my", authMiddleware, async (req, res) => {
-  try {
-    const projects = await Project.find({
-      "assignments.user": req.user.id,
-      status: { $ne: "ARCHIVED" } // Don't show archived projects by default
-    })
-    .populate("assignments.user", "fullName email role")
-    .sort({ createdAt: -1 });
-
-    const response = await Promise.all(
-      projects.map(async (project) => {
-        const formatDate = (date) => {
-          if (!date) return '';
-          const d = new Date(date);
-          const dd = String(d.getDate()).padStart(2, '0');
-          const mm = String(d.getMonth() + 1).padStart(2, '0');
-          const yyyy = d.getFullYear();
-          return `${dd}-${mm}-${yyyy}`;
-        };
-
-        const startStr = formatDate(project.startDate);
-        const endStr = formatDate(project.endDate);
-        
-        let workingDays = 0;
-        if (startStr && endStr) {
-          workingDays = await countWorkingDaysInRange(startStr, endStr);
-        }
-
-        const calculatedTotalHours = workingDays * 8;
-
-        return {
-          ...project.toObject(),
-          workingDays,
-          calculatedTotalHours,
-        };
-      })
-    );
-
-    res.json(response);
-  } catch (err) {
-    console.error("My projects error:", err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-/* =====================================================
-   GET SINGLE PROJECT DETAILS
-   ===================================================== */
-router.get("/:id", authMiddleware, async (req, res) => {
-  try {
-    const project = await Project.findById(req.params.id)
-      .populate("assignments.user", "fullName email role department");
-
-    if (!project) {
-      return res.status(404).json({ message: "Project not found" });
-    }
-
-    // Check if user has access
-    const isAssigned = project.assignments.some(
-      assignment => getAssignmentUserIdString(assignment) === req.user.id.toString()
-    );
-    
-    if (req.user.role === "employee" && !isAssigned) {
-      return res.status(403).json({ message: "Access denied" });
-    }
-
-    // Calculate working days (for display purposes only)
-    const formatDate = (date) => {
-      if (!date) return '';
-      const d = new Date(date);
-      const dd = String(d.getDate()).padStart(2, '0');
-      const mm = String(d.getMonth() + 1).padStart(2, '0');
-      const yyyy = d.getFullYear();
-      return `${dd}-${mm}-${yyyy}`;
-    };
-
-    const startStr = formatDate(project.startDate);
-    const endStr = formatDate(project.endDate);
-    
-    let workingDays = 0;
-    if (startStr && endStr) {
-      workingDays = await countWorkingDaysInRange(startStr, endStr);
-    }
-
-    const calculatedTotalHours = workingDays * 8;
-    
-    // Get recent tasks (without recalculating hours)
-    const tasks = await Task.find({ projectId: project._id })
-      .populate("assignedUserId", "fullName email")
-      .populate("createdByUserId", "fullName email")
-      .sort({ createdAt: -1 })
-      .limit(50);
-
-    res.json({
-      ...project.toObject(),
-      workingDays,
-      calculatedTotalHours,
-      calculationDifference: project.totalEstimatedHours - calculatedTotalHours,
-      recentTasks: tasks,
-    });
-  } catch (err) {
-    console.error("Get project error:", err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
 
 /* =====================================================
    UPDATE PROJECT
@@ -543,6 +943,13 @@ router.patch(
       const project = await Project.findById(req.params.id);
       if (!project) {
         return res.status(404).json({ message: "Project not found" });
+      }
+
+      // Check if user is the project manager
+      if (project.manager.toString() !== req.user.id.toString()) {
+        return res.status(403).json({ 
+          message: "You are not the manager of this project" 
+        });
       }
 
       if (project.status === "ARCHIVED") {
@@ -576,7 +983,6 @@ router.patch(
         // Update calculated fields if not explicitly set
         if (!updates.totalEstimatedHours) {
           updates.totalEstimatedHours = calculatedTotalHours;
-          // NOTE: balanceHours will be auto-calculated by schema pre-save
         }
 
         if (!updates.durationMonths) {
@@ -587,19 +993,12 @@ router.patch(
         updates.endDate = newEndDate;
       }
 
-      // If totalEstimatedHours is being updated, DO NOT manually update balanceHours
-      // The schema pre-save hook will handle it automatically
-      if (updates.totalEstimatedHours !== undefined) {
-        // Just update totalEstimatedHours, schema will handle the rest
-        // No manual balanceHours calculation needed
-      }
-
-      // Update the project (schema pre-save will handle balanceHours)
+      // Update the project
       const updatedProject = await Project.findByIdAndUpdate(
         req.params.id,
         updates,
         { new: true, runValidators: true }
-      ).populate("assignments.user");
+      ).populate("assignments.user").populate("manager");
 
       // Log update
       try {
@@ -632,76 +1031,6 @@ router.patch(
 );
 
 /* =====================================================
-   ASSIGN EMPLOYEE TO PROJECT
-   ===================================================== */
-router.post(
-  "/:id/assign",
-  authMiddleware,
-  requireRole(["manager"]),
-  async (req, res) => {
-    try {
-      const { userId, role } = req.body;
-
-      const project = await Project.findById(req.params.id);
-      if (!project) return res.status(404).json({ message: "Project not found" });
-
-      if (project.status === "ARCHIVED") {
-        return res.status(400).json({ 
-          message: "Cannot assign to archived projects" 
-        });
-      }
-
-      const employee = await User.findById(userId);
-      if (!employee || employee.role !== "employee") {
-        return res.status(400).json({ message: "Invalid employee" });
-      }
-
-      const already = project.assignments.find(
-        (a) => getAssignmentUserIdString(a) === userId
-      );
-      
-      if (!already) {
-        project.assignments.push({ user: userId, role });
-        await project.save();
-      }
-
-      const populated = await Project.findById(project._id).populate(
-        "assignments.user"
-      );
-
-      // Log assignment
-      try {
-        await Log.create({
-          type: "OPERATION",
-          action: "ASSIGN_PROJECT",
-          entity: "PROJECT",
-          user: req.user.id,
-          userName: req.user.fullName,
-          userEmail: req.user.email,
-          role: req.user.role,
-          description: `Assigned ${employee.fullName} to project ${project.name}`,
-          status: "SUCCESS",
-          ipAddress: getClientIp(req),
-          details: {
-            projectId: project._id,
-            employeeId: employee._id,
-            employeeEmail: employee.email,
-            assignedRole: role,
-          },
-        });
-      } catch (logErr) {
-        console.error("Log ASSIGN_PROJECT error:", logErr.message);
-      }
-
-      res.json(populated);
-    } catch (err) {
-      console.error("Assign project error:", err);
-      res.status(500).json({ message: "Server error" });
-    }
-  }
-);
-
-/* =====================================================
    UNASSIGN EMPLOYEE FROM PROJECT
    ===================================================== */
 router.delete(
@@ -710,16 +1039,29 @@ router.delete(
   requireRole(["manager"]),
   async (req, res) => {
     try {
-      const project = await Project.findById(req.params.id).populate(
-        "assignments.user",
-        "fullName email"
-      );
+      const project = await Project.findById(req.params.id)
+        .populate("assignments.user", "fullName email")
+        .populate("manager");
       
       if (!project) return res.status(404).json({ message: "Project not found" });
+
+      // Check if user is the project manager
+      if (project.manager.toString() !== req.user.id.toString()) {
+        return res.status(403).json({ 
+          message: "You are not the manager of this project" 
+        });
+      }
 
       const removed = project.assignments.find(
         (a) => getAssignmentUserIdString(a) === req.params.userId
       );
+
+      // Update endMonth/endYear if assignment exists
+      if (removed) {
+        const now = new Date();
+        removed.endMonth = now.getMonth() + 1;
+        removed.endYear = now.getFullYear();
+      }
 
       project.assignments = project.assignments.filter(
         (a) => getAssignmentUserIdString(a) !== req.params.userId
@@ -727,9 +1069,9 @@ router.delete(
 
       await project.save();
 
-      const populated = await Project.findById(project._id).populate(
-        "assignments.user"
-      );
+      const populated = await Project.findById(project._id)
+        .populate("assignments.user")
+        .populate("manager");
 
       // Log unassignment
       if (removed) {
@@ -752,6 +1094,8 @@ router.delete(
               projectId: project._id,
               employeeId: removedUser?._id || req.params.userId,
               employeeEmail: removedUser?.email,
+              endMonth: now.getMonth() + 1,
+              endYear: now.getFullYear(),
             },
           });
         } catch (logErr) {
@@ -779,6 +1123,13 @@ router.post(
       const project = await Project.findById(req.params.id);
       if (!project) {
         return res.status(404).json({ message: "Project not found" });
+      }
+
+      // Check if user is the project manager
+      if (project.manager.toString() !== req.user.id.toString()) {
+        return res.status(403).json({ 
+          message: "You are not the manager of this project" 
+        });
       }
 
       if (project.status === "ARCHIVED") {
@@ -832,6 +1183,13 @@ router.post(
       const project = await Project.findById(req.params.id);
       if (!project) {
         return res.status(404).json({ message: "Project not found" });
+      }
+
+      // Check if user is the project manager
+      if (project.manager.toString() !== req.user.id.toString()) {
+        return res.status(403).json({ 
+          message: "You are not the manager of this project" 
+        });
       }
 
       if (project.status !== "ARCHIVED") {

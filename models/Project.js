@@ -19,6 +19,24 @@ const assignmentSchema = new mongoose.Schema(
       required: true, // Developer, DevOps, QA, Tester, PM, Tech Lead, Support, Other
       uppercase: true,
     },
+    startMonth: {
+      type: Number,
+      required: true,
+      min: 1,
+      max: 12,
+    },
+    startYear: {
+      type: Number,
+      required: true,
+    },
+    endMonth: {
+      type: Number,
+      min: 1,
+      max: 12,
+    },
+    endYear: {
+      type: Number,
+    },
   },
   { _id: false }
 );
@@ -32,6 +50,31 @@ const roleConsumptionSchema = new mongoose.Schema(
     role: {
       type: String,
       required: true,
+    },
+    consumedHours: {
+      type: Number,
+      default: 0,
+    },
+  },
+  { _id: false }
+);
+
+/**
+ * Monthly consumption tracking
+ * - Critical for month/year isolation
+ * - January consumption must NOT affect February balance
+ */
+const monthlyConsumptionSchema = new mongoose.Schema(
+  {
+    year: {
+      type: Number,
+      required: true,
+    },
+    month: {
+      type: Number,
+      required: true,
+      min: 1,
+      max: 12,
     },
     consumedHours: {
       type: Number,
@@ -58,6 +101,15 @@ const projectSchema = new mongoose.Schema(
     },
     description: {
       type: String,
+    },
+
+    /* =====================================================
+       MANAGER OWNERSHIP (REQUIRED)
+       ===================================================== */
+    manager: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
     },
 
     /* =====================================================
@@ -96,6 +148,14 @@ const projectSchema = new mongoose.Schema(
     },
 
     /* =====================================================
+       MONTHLY CONSUMPTION (CRITICAL FOR ISOLATION)
+       ===================================================== */
+    monthlyConsumption: {
+      type: [monthlyConsumptionSchema],
+      default: [],
+    },
+
+    /* =====================================================
        ROLE-WISE CONSUMPTION (AUDIT & DELAY REASON)
        ===================================================== */
     consumptionByRole: {
@@ -108,8 +168,7 @@ const projectSchema = new mongoose.Schema(
        ===================================================== */
     status: {
       type: String,
-      enum: ["DRAFT", "APPROVED", "REJECTED", "COMPLETED", "ARCHIVED"]
-,
+      enum: ["DRAFT", "APPROVED", "REJECTED", "COMPLETED", "ARCHIVED"],
       default: "DRAFT",
     },
 
@@ -117,18 +176,10 @@ const projectSchema = new mongoose.Schema(
        PROJECT PHASE (OPTIONAL CONTROL)
        ===================================================== */
     currentPhase: {
-  type: String,
-  enum: [
-    "PLANNING",      // ✅ ADD THIS
-    "DEVELOPMENT",
-    "TESTING",
-    "DEPLOYMENT",
-    "REVIEW",
-    "COMPLETED"
-  ],
-  default: "PLANNING"
-},
-
+      type: String,
+      enum: ["PLANNING", "DEVELOPMENT", "TESTING", "DEPLOYMENT", "REVIEW", "COMPLETED"],
+      default: "PLANNING",
+    },
 
     /* =====================================================
        ASSIGNED EMPLOYEES WITH ROLES

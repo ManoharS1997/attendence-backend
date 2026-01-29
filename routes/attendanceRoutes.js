@@ -1,8 +1,9 @@
-
+// routes/attendanceRoutes.js
 import express from "express";
 import Attendance from "../models/Attendance.js";
 import User from "../models/User.js";
 import AttendanceRequest from "../models/AttendanceRequest.js";
+import Project from "../models/Project.js";
 import { authMiddleware, requireRole } from "../middleware/auth.js";
 import Log from "../models/Log.js";
 
@@ -55,7 +56,6 @@ const todayString = () => {
 /**
  * Check if a status is considered a leave status
  */
-// ✅ FIXED: Correct leave statuses only
 const LEAVE_STATUSES = [
   "CASUAL LEAVE",
   "EMERGENCY LEAVE",
@@ -86,7 +86,6 @@ const normalizeStatus = (status) => {
   return { status, halfDayType: null };
 };
 
-
 /**
  * Create log entry for auditing
  */
@@ -95,6 +94,254 @@ const createLog = async (logData) => {
     await Log.create(logData);
   } catch (logErr) {
     console.error("Log creation error:", logErr.message);
+  }
+};
+
+/* ======================== PROJECT ATTENDANCE HELPERS ======================== */
+
+/**
+ * Helper: Check if assignment is active in given month/year
+ */
+const isAssignmentActiveInMonth = (assignment, month, year) => {
+  // If no start date, assignment is not active
+  if (!assignment.startYear || !assignment.startMonth) {
+    return false;
+  }
+  
+  // Assignment starts after this month/year
+  if (assignment.startYear > year) {
+    return false;
+  }
+  
+  if (assignment.startYear === year && assignment.startMonth > month) {
+    return false;
+  }
+  
+  // If no end date, assignment is ongoing
+  if (!assignment.endYear || !assignment.endMonth) {
+    return true;
+  }
+  
+  // Assignment ended before this month/year
+  if (assignment.endYear < year) {
+    return false;
+  }
+  
+  if (assignment.endYear === year && assignment.endMonth < month) {
+    return false;
+  }
+  
+  return true;
+};
+
+/**
+ * Helper: Get assignment start date as Date object for sorting
+ */
+const getAssignmentStartDate = (assignment) => {
+  if (assignment.startYear && assignment.startMonth) {
+    // Use 1st day of month for comparison
+    return new Date(assignment.startYear, assignment.startMonth - 1, 1);
+  }
+  return new Date(0); // Very old date if not specified
+};
+
+/**
+ * Apply attendance hours to project balance (DEVELOPER role only)
+ * FIXED: Correct project assignment filtering logic
+ */
+const applyAttendanceToProject = async (attendance, user) => {
+  try {
+    // Only developers can affect project balance via attendance
+    if (user.role !== "employee") {
+      console.log(`User ${user._id} is not an employee, skipping project balance update`);
+      return;
+    }
+
+    // Extract month and year from date string (DD-MM-YYYY)
+    const [day, month, year] = attendance.date.split("-").map(Number);
+    
+    // ✅ FIXED: Find all projects where user is assigned
+    const projects = await Project.find({
+      "assignments.user": user._id
+    });
+
+    if (projects.length === 0) {
+      console.log(`No projects found for user ${user._id}`);
+      return;
+    }
+
+    // ✅ FIXED: Filter in JavaScript to correctly match assignments
+    const activeAssignments = [];
+    
+    projects.forEach(project => {
+      project.assignments.forEach(assignment => {
+        // Check if this assignment matches the user
+        if (assignment.user.toString() === user._id.toString()) {
+          
+          // Check if role is DEVELOPER
+          if (assignment.role !== "DEVELOPER") {
+            return; // Skip non-developer assignments
+          }
+          
+          // Check date range
+          const isAssignmentActive = isAssignmentActiveInMonth(
+            assignment,
+            month,
+            year
+          );
+          
+          if (isAssignmentActive) {
+            activeAssignments.push({
+              project,
+              assignment,
+              projectId: project._id,
+              startDate: getAssignmentStartDate(assignment),
+              assignmentId: assignment._id || assignment.id
+            });
+          }
+        }
+      });
+    });
+
+    if (activeAssignments.length === 0) {
+      console.log(`No active DEVELOPER assignments found for user ${user._id} in ${month}-${year}`);
+      return;
+    }
+
+    // ✅ DECISION: Apply to ONE project only
+    // Strategy: Pick the most recent assignment start date
+    const sortedAssignments = activeAssignments.sort((a, b) => {
+      return new Date(b.startDate) - new Date(a.startDate); // Most recent first
+    });
+    
+    const selectedAssignment = sortedAssignments[0];
+    const project = selectedAssignment.project;
+    const hoursToApply = attendance.hoursWorked;
+
+    if (hoursToApply <= 0) {
+      console.log(`No hours to apply for attendance ${attendance._id}`);
+      return;
+    }
+
+    // Check if already counted
+    if (attendance.countedInProject) {
+      console.log(`Attendance ${attendance._id} already counted in project`);
+      return;
+    }
+
+    // Update project consumed hours
+    project.consumedHours += hoursToApply;
+
+    // Update monthly consumption
+    let monthly = project.monthlyConsumption.find(
+      m => m.month === month && m.year === year
+    );
+
+    if (!monthly) {
+      project.monthlyConsumption.push({
+        month,
+        year,
+        consumedHours: hoursToApply
+      });
+    } else {
+      monthly.consumedHours += hoursToApply;
+    }
+
+    // Update consumption by role (DEVELOPER)
+    let roleConsumption = project.consumptionByRole.find(
+      c => c.role === "DEVELOPER"
+    );
+
+    if (!roleConsumption) {
+      project.consumptionByRole.push({
+        role: "DEVELOPER",
+        consumedHours: hoursToApply
+      });
+    } else {
+      roleConsumption.consumedHours += hoursToApply;
+    }
+
+    await project.save();
+    
+    // Mark attendance as counted
+    attendance.countedInProject = true;
+    attendance.projectId = project._id;
+    attendance.month = month;
+    attendance.year = year;
+    attendance.assignmentId = selectedAssignment.assignmentId; // Store which assignment was used
+    await attendance.save();
+
+    console.log(`Applied ${hoursToApply} hours from attendance ${attendance._id} to project ${project.name} (assignment: ${selectedAssignment.assignmentId})`);
+
+  } catch (error) {
+    console.error("Error applying attendance to project:", error);
+    // Don't fail the whole request if project update fails
+  }
+};
+
+/**
+ * Revert attendance hours from project balance (if needed)
+ * UPDATED: Handle new assignmentId field
+ */
+const revertAttendanceFromProject = async (attendance) => {
+  try {
+    if (!attendance.countedInProject || !attendance.projectId) {
+      return;
+    }
+
+    const project = await Project.findById(attendance.projectId);
+    if (!project) {
+      console.log(`Project ${attendance.projectId} not found for attendance ${attendance._id}`);
+      return;
+    }
+
+    const hoursToRevert = attendance.hoursWorked;
+    const month = attendance.month;
+    const year = attendance.year;
+
+    // Revert project consumed hours
+    project.consumedHours = Math.max(0, project.consumedHours - hoursToRevert);
+
+    // Revert monthly consumption
+    const monthlyIndex = project.monthlyConsumption.findIndex(
+      m => m.month === month && m.year === year
+    );
+
+    if (monthlyIndex !== -1) {
+      const monthly = project.monthlyConsumption[monthlyIndex];
+      monthly.consumedHours = Math.max(0, monthly.consumedHours - hoursToRevert);
+      
+      if (monthly.consumedHours <= 0) {
+        project.monthlyConsumption.splice(monthlyIndex, 1);
+      }
+    }
+
+    // Revert consumption by role (DEVELOPER)
+    const roleIndex = project.consumptionByRole.findIndex(
+      c => c.role === "DEVELOPER"
+    );
+
+    if (roleIndex !== -1) {
+      const roleConsumption = project.consumptionByRole[roleIndex];
+      roleConsumption.consumedHours = Math.max(0, roleConsumption.consumedHours - hoursToRevert);
+      
+      if (roleConsumption.consumedHours <= 0) {
+        project.consumptionByRole.splice(roleIndex, 1);
+      }
+    }
+
+    await project.save();
+    
+    // Reset attendance flags
+    attendance.countedInProject = false;
+    attendance.projectId = undefined;
+    attendance.assignmentId = undefined;
+    await attendance.save();
+
+    console.log(`Reverted ${hoursToRevert} hours from project ${project.name} for attendance ${attendance._id}`);
+
+  } catch (error) {
+    console.error("Error reverting attendance from project:", error);
   }
 };
 
@@ -115,20 +362,19 @@ const HALF_DAY_MIN = 3 * 60;      // 3 hours for half day
 router.post("/", authMiddleware, async (req, res) => {
   try {
     const {
-  date,
-  status: rawStatus,
-  workInTime,
-  workOutTime,
-  lunchInTime,
-  lunchOutTime,
-  note,
-  extraWork
-} = req.body;
+      date,
+      status: rawStatus,
+      workInTime,
+      workOutTime,
+      lunchInTime,
+      lunchOutTime,
+      note,
+      extraWork
+    } = req.body;
 
-const normalized = normalizeStatus(rawStatus);
-const status = normalized.status;
-const halfDayType = normalized.halfDayType;
-
+    const normalized = normalizeStatus(rawStatus);
+    const status = normalized.status;
+    const halfDayType = normalized.halfDayType;
 
     // Validate required fields
     if (!date || !status) {
@@ -226,12 +472,11 @@ const halfDayType = normalized.halfDayType;
     }
 
     // ✅ FIXED: Auto approve only SAME DAY full day present
-    // Changed from hoursWorked >= DAILY_WORK_MIN/60 to hoursWorked > 0
     if (
       !existing &&
       isToday &&
       status === "PRESENT FULL DAY" &&
-      hoursWorked > 0  // ✅ FIXED: Changed from DAILY_WORK_MIN/60 to > 0
+      hoursWorked > 0
     ) {
       const record = await Attendance.create({
         user: req.user.id,
@@ -258,6 +503,9 @@ const halfDayType = normalized.halfDayType;
           comment: "Self-marked present full day (auto-approved)"
         }
       });
+
+      // ✅ Apply to project balance (DEVELOPER only)
+      await applyAttendanceToProject(record, req.user);
 
       // Extra hours need approval for comp-off (if at least 1 hour)
       if (extraHoursWorked >= 1) {
@@ -590,6 +838,7 @@ router.get(
 /* ------------------------ PATCH /api/attendance/requests/:id/decision ------------------------ */
 /**
  * Manager approves/rejects an attendance request
+ * ✅ ADDED: Project balance update for DEVELOPER attendance
  */
 router.patch(
   "/requests/:id/decision",
@@ -661,6 +910,11 @@ router.patch(
         });
       }
 
+      // Handle REJECTED decision first (revert any previous project balance)
+      if (attendanceDoc && decision === "REJECTED" && attendanceDoc.countedInProject) {
+        await revertAttendanceFromProject(attendanceDoc);
+      }
+
       // Apply decision to existing attendance record
       if (attendanceDoc) {
         if (decision === "APPROVED") {
@@ -676,14 +930,12 @@ router.patch(
           attendanceDoc.isLeaveRequest = isLeaveStatus(request.toStatus);
 
           // ✅ Handle extra hours and comp-off calculation
-          // DO NOT modify extraHoursWorked - keep daily hours intact
           if (request.extraHours) {
             const fullCompOffDays = Math.floor(request.extraHours / 8);
 
             attendanceDoc.compOffDaysEarned =
               (attendanceDoc.compOffDaysEarned || 0) + fullCompOffDays;
 
-            // ❗ DO NOT change extraHoursWorked here - it stays as daily worked hours
             attendanceDoc.extraHoursApproved = true;
           }
 
@@ -702,6 +954,16 @@ router.patch(
             });
           }
 
+          // ✅ Apply attendance hours to project balance for DEVELOPERS
+          // Only if it's a PRESENT day (FULL or HALF) with positive hours
+          if (
+            (request.toStatus === "PRESENT FULL DAY" || request.toStatus === "PRESENT HALF DAY") &&
+            request.calculated?.hoursWorked > 0 &&
+            request.user?.role === "employee"
+          ) {
+            await applyAttendanceToProject(attendanceDoc, request.user);
+          }
+
           // 🔐 LOCK for half day & leave
           if (
             request.toStatus === "PRESENT HALF DAY" ||
@@ -713,8 +975,6 @@ router.patch(
         } else if (decision === "REJECTED") {
           // Reset approval status but keep worked hours
           if (request.extraHours) {
-            // Keep extraHoursWorked as is (they were actually worked)
-            // Only mark as not approved for comp-off
             attendanceDoc.extraHoursApproved = false;
           }
         }
@@ -794,6 +1054,7 @@ router.patch(
 /* ------------------------ DELETE /api/attendance/:id ------------------------ */
 /**
  * Delete attendance record (manager only)
+ * ✅ ADDED: Revert project balance if attendance was counted
  */
 router.delete(
   "/:id",
@@ -801,12 +1062,20 @@ router.delete(
   requireRole(["manager", "admin"]),
   async (req, res) => {
     try {
-      const record = await Attendance.findByIdAndDelete(req.params.id)
+      const record = await Attendance.findById(req.params.id)
         .populate("user", "fullName email role department");
 
       if (!record) {
         return res.status(404).json({ message: "Attendance record not found" });
       }
+
+      // ✅ Revert project balance if this attendance was counted
+      if (record.countedInProject) {
+        await revertAttendanceFromProject(record);
+      }
+
+      // Delete the attendance record
+      await Attendance.findByIdAndDelete(req.params.id);
 
       // Delete associated attendance requests
       await AttendanceRequest.deleteMany({ attendance: record._id });
