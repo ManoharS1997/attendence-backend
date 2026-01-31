@@ -25,12 +25,18 @@ import birthdayRoutes from "./routes/birthdayRoutes.js";
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// ===================== CORS CONFIG =====================
 const allowedOrigins = [
+  // Local development
   "http://localhost:5173",
   "http://localhost:4173",
+
+  // Production frontend
+  "https://attendencetracker.nowitservices.com",
+
+  // (Optional) if you ever access UI via IP
   "http://44.217.109.241:5173"
 ];
+
 
 app.use(
   cors({
