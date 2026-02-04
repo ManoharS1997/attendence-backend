@@ -107,30 +107,30 @@ const isAssignmentActiveInMonth = (assignment, month, year) => {
   if (!assignment.startYear || !assignment.startMonth) {
     return false;
   }
-  
+
   // Assignment starts after this month/year
   if (assignment.startYear > year) {
     return false;
   }
-  
+
   if (assignment.startYear === year && assignment.startMonth > month) {
     return false;
   }
-  
+
   // If no end date, assignment is ongoing
   if (!assignment.endYear || !assignment.endMonth) {
     return true;
   }
-  
+
   // Assignment ended before this month/year
   if (assignment.endYear < year) {
     return false;
   }
-  
+
   if (assignment.endYear === year && assignment.endMonth < month) {
     return false;
   }
-  
+
   return true;
 };
 
@@ -159,7 +159,7 @@ const applyAttendanceToProject = async (attendance, user) => {
 
     // Extract month and year from date string (DD-MM-YYYY)
     const [day, month, year] = attendance.date.split("-").map(Number);
-    
+
     // ✅ FIXED: Find all projects where user is assigned
     const projects = await Project.find({
       "assignments.user": user._id
@@ -172,24 +172,24 @@ const applyAttendanceToProject = async (attendance, user) => {
 
     // ✅ FIXED: Filter in JavaScript to correctly match assignments
     const activeAssignments = [];
-    
+
     projects.forEach(project => {
       project.assignments.forEach(assignment => {
         // Check if this assignment matches the user
         if (assignment.user.toString() === user._id.toString()) {
-          
+
           // Check if role is DEVELOPER
           if (assignment.role !== "DEVELOPER") {
             return; // Skip non-developer assignments
           }
-          
+
           // Check date range
           const isAssignmentActive = isAssignmentActiveInMonth(
             assignment,
             month,
             year
           );
-          
+
           if (isAssignmentActive) {
             activeAssignments.push({
               project,
@@ -213,7 +213,7 @@ const applyAttendanceToProject = async (attendance, user) => {
     const sortedAssignments = activeAssignments.sort((a, b) => {
       return new Date(b.startDate) - new Date(a.startDate); // Most recent first
     });
-    
+
     const selectedAssignment = sortedAssignments[0];
     const project = selectedAssignment.project;
     const hoursToApply = attendance.hoursWorked;
@@ -262,7 +262,7 @@ const applyAttendanceToProject = async (attendance, user) => {
     }
 
     await project.save();
-    
+
     // Mark attendance as counted
     attendance.countedInProject = true;
     attendance.projectId = project._id;
@@ -310,7 +310,7 @@ const revertAttendanceFromProject = async (attendance) => {
     if (monthlyIndex !== -1) {
       const monthly = project.monthlyConsumption[monthlyIndex];
       monthly.consumedHours = Math.max(0, monthly.consumedHours - hoursToRevert);
-      
+
       if (monthly.consumedHours <= 0) {
         project.monthlyConsumption.splice(monthlyIndex, 1);
       }
@@ -324,14 +324,14 @@ const revertAttendanceFromProject = async (attendance) => {
     if (roleIndex !== -1) {
       const roleConsumption = project.consumptionByRole[roleIndex];
       roleConsumption.consumedHours = Math.max(0, roleConsumption.consumedHours - hoursToRevert);
-      
+
       if (roleConsumption.consumedHours <= 0) {
         project.consumptionByRole.splice(roleIndex, 1);
       }
     }
 
     await project.save();
-    
+
     // Reset attendance flags
     attendance.countedInProject = false;
     attendance.projectId = undefined;
@@ -386,7 +386,7 @@ router.post("/", authMiddleware, async (req, res) => {
     if (lunchInTime && lunchOutTime) {
       const lunchInMin = toMinutes(lunchInTime);
       const lunchOutMin = toMinutes(lunchOutTime);
-      
+
       if (lunchInMin !== null && lunchOutMin !== null && lunchOutMin > lunchInMin) {
         lunchBreakMinutes = lunchOutMin - lunchInMin;
       }
@@ -394,8 +394,8 @@ router.post("/", authMiddleware, async (req, res) => {
 
     // ✅ Half day validation - NO LUNCH allowed
     if (status === "PRESENT HALF DAY" && lunchBreakMinutes > 0) {
-      return res.status(400).json({ 
-        message: "Lunch not allowed for half day attendance" 
+      return res.status(400).json({
+        message: "Lunch not allowed for half day attendance"
       });
     }
 
@@ -427,9 +427,9 @@ router.post("/", authMiddleware, async (req, res) => {
       if (inMin !== null && outMin !== null) {
         // ✅ CORRECT FORMULA: Gross minutes minus lunch minutes
         const grossMinutes = outMin - inMin;
-        const lunchMinutes = lunchInTime && lunchOutTime ? 
+        const lunchMinutes = lunchInTime && lunchOutTime ?
           (toMinutes(lunchOutTime) - toMinutes(lunchInTime)) : 0;
-        
+
         workedMinutes = grossMinutes - lunchMinutes;
 
         // Calculate late minutes
@@ -466,8 +466,8 @@ router.post("/", authMiddleware, async (req, res) => {
 
     // ✅ Half day validation - must work minimum 3 hours
     if (status === "PRESENT HALF DAY" && workedMinutes < HALF_DAY_MIN) {
-      return res.status(400).json({ 
-        message: "Half day requires minimum 3 working hours" 
+      return res.status(400).json({
+        message: "Half day requires minimum 3 working hours"
       });
     }
 
@@ -479,6 +479,8 @@ router.post("/", authMiddleware, async (req, res) => {
       hoursWorked > 0
     ) {
       const record = await Attendance.create({
+        workingDay: hoursWorked >= 8 ? 1 : 0,
+
         user: req.user.id,
         date,
         status,
@@ -535,14 +537,16 @@ router.post("/", authMiddleware, async (req, res) => {
         details: { date, status, extraHoursWorked }
       });
 
-      return res.json({ 
-        message: "Attendance marked", 
-        record 
+      return res.json({
+        message: "Attendance marked",
+        record
       });
     }
 
     // All other cases → manager approval
     const requestPayload = {
+      isLeaveRequest: true,
+
       user: req.user.id,
       date,
       type: existing ? "UPDATE" : "CREATE",
@@ -631,8 +635,8 @@ router.post("/extra-hours", authMiddleware, async (req, res) => {
     const { date, extraHours, reason } = req.body;
 
     if (!date || !extraHours || extraHours <= 0) {
-      return res.status(400).json({ 
-        message: "Valid date and positive extra hours are required" 
+      return res.status(400).json({
+        message: "Valid date and positive extra hours are required"
       });
     }
 
@@ -722,11 +726,11 @@ router.get("/extra-hours", authMiddleware, async (req, res) => {
     const records = await Attendance.find(filter);
 
     // ✅ Sum ALL extraHoursWorked, not just approved ones
-    const totalExtraHours = records.reduce((sum, record) => 
+    const totalExtraHours = records.reduce((sum, record) =>
       sum + (record.extraHoursWorked || 0), 0
     );
 
-    const approvedExtraHours = records.reduce((sum, record) => 
+    const approvedExtraHours = records.reduce((sum, record) =>
       sum + (record.extraHoursApproved ? (record.extraHoursWorked || 0) : 0), 0
     );
 
@@ -918,8 +922,30 @@ router.patch(
       // Apply decision to existing attendance record
       if (attendanceDoc) {
         if (decision === "APPROVED") {
+
+          if (request.toStatus === "PRESENT FULL DAY") {
+            attendanceDoc.isLeaveRequest = false;
+            attendanceDoc.workingDay = 1;
+
+            // remove any previous leave impact
+            attendanceDoc.compOffDaysEarned = 0;
+            attendanceDoc.halfDayType = null;
+
+            // ensure payable hours are respected
+            if (request.calculated?.hoursWorked >= 8) {
+              attendanceDoc.payableMinutes = 480;
+            }
+          }
+
+
+
           // Update status and other fields
           attendanceDoc.status = request.toStatus;
+          // 🔐 LOCK attendance after half-day approval
+if (request.toStatus === "PRESENT HALF DAY") {
+  attendanceDoc.isLocked = true;
+}
+
           attendanceDoc.workInTime = request.toWorkInTime || attendanceDoc.workInTime;
           attendanceDoc.workOutTime = request.toWorkOutTime || attendanceDoc.workOutTime;
           attendanceDoc.lunchInTime = request.toLunchInTime || attendanceDoc.lunchInTime;     // ✅ Update lunch in
@@ -929,29 +955,37 @@ router.patch(
           attendanceDoc.halfDayType = request.halfDayType || attendanceDoc.halfDayType;
           attendanceDoc.isLeaveRequest = isLeaveStatus(request.toStatus);
 
-          // ✅ Handle extra hours and comp-off calculation
-          if (request.extraHours) {
-            const fullCompOffDays = Math.floor(request.extraHours / 8);
+          // ✅ FIX 1: If changed to PRESENT, clear ALL leave data
+          if (
+  request.toStatus === "PRESENT FULL DAY" ||
+  request.toStatus === "PRESENT HALF DAY"
+) {
+  attendanceDoc.isLeaveRequest = false;
+  attendanceDoc.leaveType = null;
+  attendanceDoc.leaveCount = 0;
+  attendanceDoc.isLocked = false;
+}
 
+
+          // ✅ FIX 2: Working day rule (8 hours)
+          if (
+            request.calculated?.hoursWorked >= 8 &&
+            request.toStatus === "PRESENT FULL DAY"
+          ) {
+            attendanceDoc.workingDay = 1;
             attendanceDoc.compOffDaysEarned =
-              (attendanceDoc.compOffDaysEarned || 0) + fullCompOffDays;
+              (attendanceDoc.compOffDaysEarned || 0) + 1;
 
             attendanceDoc.extraHoursApproved = true;
+
+          } else {
+            attendanceDoc.workingDay = 0;
           }
+
 
           if (request.toStatus === "COMPOFF" && request.extraWork) {
             attendanceDoc.extraWork = request.extraWork;
             attendanceDoc.extraHoursApproved = true;
-          }
-
-          // ✅ COMP-OFF CREDIT RULE
-          if (
-            request.calculated?.extraHoursWorked >= 1 &&
-            request.toStatus === "PRESENT FULL DAY"
-          ) {
-            await User.findByIdAndUpdate(request.user._id, {
-              $inc: { compOffBalance: 1 }
-            });
           }
 
           // ✅ Apply attendance hours to project balance for DEVELOPERS
@@ -1044,8 +1078,8 @@ router.patch(
 
     } catch (err) {
       console.error("Decision on attendance request error:", err);
-      return res.status(400).json({ 
-        message: err.message || "Error applying decision" 
+      return res.status(400).json({
+        message: err.message || "Error applying decision"
       });
     }
   }
@@ -1100,7 +1134,7 @@ router.delete(
         }
       });
 
-      res.json({ 
+      res.json({
         message: "Attendance record deleted successfully",
         deletedRecord: record
       });

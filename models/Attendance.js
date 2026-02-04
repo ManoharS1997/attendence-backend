@@ -132,6 +132,14 @@ const attendanceSchema = new Schema(
       type: Number,
       default: 0
     },
+    /**
+ * Working day count (0 or 1)
+ */
+workingDay: {
+  type: Number,
+  default: 0
+},
+
 
     /**
      * Whether extra hours are approved by manager
