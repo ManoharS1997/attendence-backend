@@ -69,6 +69,7 @@ router.get("/:id/download", authMiddleware, async (req, res) => {
 <head>
 <meta charset="UTF-8" />
 <title>Payslip</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans&display=swap" rel="stylesheet">
 <style>
 body { font-family: Arial, sans-serif; background: #f4f7fb; padding: 24px; }
 .payslip { max-width: 900px; margin: auto; background: #fff; border-radius: 10px; padding: 24px; box-shadow: 0 8px 30px rgba(0,0,0,0.12); }
