@@ -373,6 +373,24 @@ router.post("/", authMiddleware, async (req, res) => {
     } = req.body;
 
     const normalized = normalizeStatus(rawStatus);
+
+    // ✅ AUTO LUNCH TIME FOR FULL DAY
+let finalLunchInTime = lunchInTime;
+let finalLunchOutTime = lunchOutTime;
+let lunchBreakMinutes = 0;
+
+if (normalized.status === "PRESENT FULL DAY") {
+  finalLunchInTime = "13:00";
+  finalLunchOutTime = "14:00";
+  lunchBreakMinutes = 60;
+} else if (lunchInTime && lunchOutTime) {
+  const lunchInMin = toMinutes(lunchInTime);
+  const lunchOutMin = toMinutes(lunchOutTime);
+
+  if (lunchInMin !== null && lunchOutMin !== null && lunchOutMin > lunchInMin) {
+    lunchBreakMinutes = lunchOutMin - lunchInMin;
+  }
+}
     const status = normalized.status;
     const halfDayType = normalized.halfDayType;
 
@@ -381,18 +399,6 @@ router.post("/", authMiddleware, async (req, res) => {
       return res.status(400).json({ message: "Date and status required" });
     }
 
-    // ✅ Calculate lunch minutes from lunchInTime/lunchOutTime
-    let lunchBreakMinutes = 0;
-    if (lunchInTime && lunchOutTime) {
-      const lunchInMin = toMinutes(lunchInTime);
-      const lunchOutMin = toMinutes(lunchOutTime);
-
-      if (lunchInMin !== null && lunchOutMin !== null && lunchOutMin > lunchInMin) {
-        lunchBreakMinutes = lunchOutMin - lunchInMin;
-      }
-    }
-
-    // ✅ Half day validation - NO LUNCH allowed
     if (status === "PRESENT HALF DAY" && lunchBreakMinutes > 0) {
       return res.status(400).json({
         message: "Lunch not allowed for half day attendance"
@@ -486,8 +492,8 @@ router.post("/", authMiddleware, async (req, res) => {
         status,
         workInTime,
         workOutTime,
-        lunchInTime,       // ✅ Store lunch in
-        lunchOutTime,      // ✅ Store lunch out
+        lunchInTime: finalLunchInTime,
+lunchOutTime: finalLunchOutTime,     // ✅ Store lunch out
         lunchBreakMinutes, // ✅ Keep backward compatibility
         lateMinutes,
         earlyLeaveMinutes,
