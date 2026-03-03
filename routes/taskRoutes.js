@@ -15,6 +15,21 @@ router.use(authMiddleware);
    ===================================================== */
 
 /**
+ * Socket.IO emit helper for dashboard updates
+ */
+const emitDashboardUpdate = (req, type, payload = {}) => {
+  const io = req.app.get("io");
+  if (io) {
+    io.emit("dashboard:update", {
+      type,
+      timestamp: new Date(),
+      ...payload
+    });
+    console.log(`📡 Socket emitted: ${type}`);
+  }
+};
+
+/**
  * Normalize role string to uppercase for consistent comparison
  */
 const normalizeRole = (role) => {
@@ -286,6 +301,14 @@ router.post("/", async (req, res) => {
         .populate("assignedUserId", "fullName email")
         .populate("createdByUserId", "fullName email");
 
+      // 🚀 Emit socket event for instant dashboard update
+      emitDashboardUpdate(req, "TASK_CREATED", {
+        taskId: populatedTask._id,
+        projectId: finalProjectId,
+        createdBy: userId,
+        role: "employee"
+      });
+
       return res.status(201).json(populatedTask);
 
     } else if (userRole === "manager") {
@@ -369,6 +392,14 @@ router.post("/", async (req, res) => {
         .populate("projectId", "name code")
         .populate("assignedUserId", "fullName email")
         .populate("createdByUserId", "fullName email");
+
+      // 🚀 Emit socket event for instant dashboard update
+      emitDashboardUpdate(req, "TASK_CREATED", {
+        taskId: populatedTask._id,
+        projectId,
+        createdBy: userId,
+        role: "manager"
+      });
 
       return res.status(201).json(populatedTask);
 
@@ -735,6 +766,10 @@ router.patch("/:id", async (req, res) => {
       updates.noOfDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
     }
 
+    // Track status change for socket emission
+    const wasCompleted = task.status === "COMPLETED";
+    const isNowCompleted = updates.status === "COMPLETED";
+
     // Update task
     const updatedTask = await Task.findByIdAndUpdate(
       id,
@@ -746,9 +781,24 @@ router.patch("/:id", async (req, res) => {
       .populate("createdByUserId", "fullName email");
 
     // If task status changed to COMPLETED, update project balance
-    if (updates.status === "COMPLETED" && task.status !== "COMPLETED") {
+    if (!wasCompleted && isNowCompleted) {
       await applyCompletedTaskToProject(updatedTask, project);
+      
+      // 🚀 Emit socket event for project balance update
+      emitDashboardUpdate(req, "PROJECT_BALANCE_UPDATED", {
+        projectId: project._id,
+        taskId: updatedTask._id,
+        hours: updatedTask.estimateHours
+      });
     }
+
+    // 🚀 Emit socket event for task update
+    emitDashboardUpdate(req, "TASK_UPDATED", {
+      taskId: updatedTask._id,
+      projectId: project._id,
+      status: updatedTask.status,
+      changes: updates
+    });
 
     res.json(updatedTask);
   } catch (err) {

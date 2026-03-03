@@ -13,6 +13,21 @@ const router = express.Router();
    HELPERS
    ===================================================== */
 
+/**
+ * Socket.IO emit helper for dashboard updates (matches taskRoutes)
+ */
+const emitDashboardUpdate = (req, type, payload = {}) => {
+  const io = req.app.get("io");
+  if (io) {
+    io.emit("dashboard:update", {
+      type,
+      timestamp: new Date(),
+      ...payload
+    });
+    console.log(`📡 Socket emitted: ${type}`);
+  }
+};
+
 const getClientIp = (req) => {
   const xff = req.headers["x-forwarded-for"];
   if (xff && typeof xff === "string") {
@@ -124,6 +139,14 @@ router.post(
         assignments: [],
         consumptionByRole: [],
         manager: req.user.id,
+      });
+
+      // 🚀 Socket emit for project creation
+      emitDashboardUpdate(req, "PROJECT_CREATED", {
+        projectId: project._id,
+        projectName: project.name,
+        projectCode: project.code,
+        status: project.status
       });
 
       // Log creation
@@ -670,6 +693,15 @@ router.post(
         .populate("assignments.user", "fullName email role employeeId")
         .populate("manager", "fullName email");
 
+      // 🚀 Socket emit for assignment update
+      emitDashboardUpdate(req, "PROJECT_ASSIGNMENT_UPDATED", {
+        projectId: project._id,
+        projectName: project.name,
+        userId,
+        role,
+        action: alreadyAssigned ? "UPDATED" : "ASSIGNED"
+      });
+
       // Log assignment
       try {
         await Log.create({
@@ -711,8 +743,6 @@ router.post(
   }
 );
 
-// ... REST OF THE CODE REMAINS THE SAME (APPROVE, REJECT, COMPLETE, UPDATE, UNASSIGN, ARCHIVE, UNARCHIVE) ...
-
 /* =====================================================
    APPROVE PROJECT
    ===================================================== */
@@ -746,6 +776,13 @@ router.patch(
 
       project.status = "APPROVED";
       await project.save();
+
+      // 🚀 Socket emit for project approval
+      emitDashboardUpdate(req, "PROJECT_APPROVED", {
+        projectId: project._id,
+        projectName: project.name,
+        projectCode: project.code
+      });
 
       // Log approval
       try {
@@ -813,6 +850,13 @@ router.patch(
 
       project.status = "REJECTED";
       await project.save();
+
+      // 🚀 Socket emit for project rejection
+      emitDashboardUpdate(req, "PROJECT_REJECTED", {
+        projectId: project._id,
+        projectName: project.name,
+        projectCode: project.code
+      });
 
       // Log rejection
       try {
@@ -892,6 +936,15 @@ router.patch(
       project.status = "COMPLETED";
       project.completedAt = new Date();
       await project.save();
+
+      // 🚀 Socket emit for project completion
+      emitDashboardUpdate(req, "PROJECT_COMPLETED", {
+        projectId: project._id,
+        projectName: project.name,
+        projectCode: project.code,
+        balanceHours: project.balanceHours,
+        hadOverrun: project.balanceHours < 0
+      });
 
       // Log completion
       try {
@@ -1000,6 +1053,14 @@ router.patch(
         { new: true, runValidators: true }
       ).populate("assignments.user").populate("manager");
 
+      // 🚀 Socket emit for project update
+      emitDashboardUpdate(req, "PROJECT_UPDATED", {
+        projectId: updatedProject._id,
+        projectName: updatedProject.name,
+        projectCode: updatedProject.code,
+        updatedFields: Object.keys(updates)
+      });
+
       // Log update
       try {
         await Log.create({
@@ -1073,6 +1134,14 @@ router.delete(
         .populate("assignments.user")
         .populate("manager");
 
+      // 🚀 Socket emit for assignment removal
+      emitDashboardUpdate(req, "PROJECT_ASSIGNMENT_UPDATED", {
+        projectId: project._id,
+        projectName: project.name,
+        userId: req.params.userId,
+        action: "UNASSIGNED"
+      });
+
       // Log unassignment
       if (removed) {
         const removedUser = removed.user;
@@ -1142,6 +1211,15 @@ router.post(
       project.archivedAt = new Date();
       await project.save();
 
+      // 🚀 Socket emit for project archive
+      emitDashboardUpdate(req, "PROJECT_STATUS_CHANGED", {
+        projectId: project._id,
+        projectName: project.name,
+        projectCode: project.code,
+        newStatus: "ARCHIVED",
+        action: "ARCHIVE"
+      });
+
       // Log archiving
       try {
         await Log.create({
@@ -1201,6 +1279,15 @@ router.post(
       project.status = "DRAFT";
       project.archivedAt = null;
       await project.save();
+
+      // 🚀 Socket emit for project unarchive
+      emitDashboardUpdate(req, "PROJECT_STATUS_CHANGED", {
+        projectId: project._id,
+        projectName: project.name,
+        projectCode: project.code,
+        newStatus: "DRAFT",
+        action: "UNARCHIVE"
+      });
 
       // Log unarchiving
       try {

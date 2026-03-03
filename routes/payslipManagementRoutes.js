@@ -17,6 +17,22 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 /* ================= HELPER FUNCTIONS ================= */
+
+/**
+ * Socket.IO emit helper for dashboard updates (matches other routes)
+ */
+const emitDashboardUpdate = (req, type, payload = {}) => {
+  const io = req.app.get("io");
+  if (io) {
+    io.emit("dashboard:update", {
+      type,
+      timestamp: new Date(),
+      ...payload
+    });
+    console.log(`📡 Socket emitted: ${type}`);
+  }
+};
+
 const getClientIp = (req) => {
   const xff = req.headers["x-forwarded-for"];
   if (xff && typeof xff === "string") return xff.split(",")[0].trim();
@@ -179,24 +195,29 @@ router.post("/", authMiddleware, requireRole(["manager", "admin"]), async (req, 
         accountType: bankDetails.accountType
       };
       existingPayslip.designation = req.body.designation;
-
       existingPayslip.employeeType = req.body.employeeType;
-
       existingPayslip.version += 1;
       existingPayslip.updatedAt = new Date();
 
       payslip = await existingPayslip.save();
+      
+      // 🚀 Socket emit for payslip update
+      emitDashboardUpdate(req, "PAYSLIP_UPDATED", {
+        payslipId: payslip._id,
+        employeeId,
+        employeeName: employee.fullName,
+        month,
+        year,
+        netPay,
+        version: payslip.version
+      });
     } else {
       // Create new payslip
       payslip = await Payslip.create({
         employee: employeeId,
         employeeId: employee.employeeId,
-
-
         designation: req.body.designation,
         employeeType: req.body.employeeType,
-
-
         month: parseInt(month),
         year: parseInt(year),
         workingDays: parseInt(workingDays),
@@ -220,7 +241,16 @@ router.post("/", authMiddleware, requireRole(["manager", "admin"]), async (req, 
         createdBy: req.user.id,
         createdByName: req.user.fullName
       });
-
+      
+      // 🚀 Socket emit for payslip generation
+      emitDashboardUpdate(req, "PAYSLIP_GENERATED", {
+        payslipId: payslip._id,
+        employeeId,
+        employeeName: employee.fullName,
+        month,
+        year,
+        netPay
+      });
     }
 
     // Log the operation
@@ -301,6 +331,16 @@ router.post("/:id/send", authMiddleware, requireRole(["manager", "admin"]), asyn
     payslip.sentToAdmin = true;
     payslip.sentToAdminAt = new Date();
     await payslip.save();
+
+    // 🚀 Socket emit for payslip sent
+    emitDashboardUpdate(req, "PAYSLIP_SENT", {
+      payslipId: payslip._id,
+      employeeId: payslip.employee._id,
+      employeeName: payslip.employee.fullName,
+      month: payslip.month,
+      year: payslip.year,
+      netPay: payslip.salary.netPay
+    });
 
     // Log the distribution
     await Log.create({
@@ -572,6 +612,15 @@ th { background:#f1f5f9; }
       payslip.status = "downloaded";
       await payslip.save();
 
+      // 🚀 Socket emit for payslip download
+      emitDashboardUpdate(req, "PAYSLIP_DOWNLOADED", {
+        payslipId: payslip._id,
+        employeeId: req.user.id,
+        employeeName: req.user.fullName,
+        month: payslip.month,
+        year: payslip.year
+      });
+
       // Log the download
       await Log.create({
         type: "OPERATION",
@@ -668,6 +717,15 @@ router.patch("/:id/view", authMiddleware, async (req, res) => {
       payslip.viewedByEmployeeAt = new Date();
       payslip.status = "viewed";
       await payslip.save();
+
+      // 🚀 Socket emit for payslip viewed
+      emitDashboardUpdate(req, "PAYSLIP_VIEWED", {
+        payslipId: payslip._id,
+        employeeId: req.user.id,
+        employeeName: req.user.fullName,
+        month: payslip.month,
+        year: payslip.year
+      });
     }
 
     res.json({ message: "Payslip marked as viewed", payslip });

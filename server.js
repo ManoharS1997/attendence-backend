@@ -1,6 +1,8 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import { createServer } from "http";
+import { Server } from "socket.io";
 import { connectDB } from "./config/db.js";
 
 // 🔁 Background Jobs
@@ -37,14 +39,10 @@ const allowedOrigins = [
   "http://44.217.109.241:5173"
 ];
 
-
+// ===================== CORS =====================
 app.use(
   cors({
-    origin(origin, callback) {
-      if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin)) return callback(null, true);
-      return callback(new Error("Not allowed by CORS"));
-    },
+    origin: allowedOrigins,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"]
@@ -52,6 +50,10 @@ app.use(
 );
 
 app.options("*", cors());
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Credentials", "true");
+  next();
+});
 
 // ===================== BODY PARSERS =====================
 app.use(express.json({ limit: "10mb" }));
@@ -90,6 +92,29 @@ app.use((err, req, res, next) => {
   });
 });
 
+// ===================== CREATE HTTP SERVER =====================
+const httpServer = createServer(app);
+
+// ===================== SOCKET.IO SETUP =====================
+const io = new Server(httpServer, {
+  cors: {
+    origin: allowedOrigins,
+    credentials: true,
+    methods: ["GET", "POST"]
+  }
+});
+
+// Make io globally accessible
+app.set("io", io);
+
+io.on("connection", (socket) => {
+  console.log("⚡ User connected:", socket.id);
+  
+  socket.on("disconnect", () => {
+    console.log("❌ User disconnected:", socket.id);
+  });
+});
+
 // ===================== START SERVER =====================
 async function startServer() {
   try {
@@ -99,9 +124,10 @@ async function startServer() {
     logArchiveJob();
     birthdayReminderJob();
 
-    app.listen(PORT, () => {
+    httpServer.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
       console.log("🎂 Birthday reminder job active");
+      console.log("🔌 Socket.IO enabled");
     });
   } catch (err) {
     console.error("❌ Server startup failed:", err);

@@ -12,6 +12,21 @@ const router = express.Router();
 /* ======================== HELPER FUNCTIONS ======================== */
 
 /**
+ * Socket.IO emit helper for dashboard updates (matches taskRoutes)
+ */
+const emitDashboardUpdate = (req, type, payload = {}) => {
+  const io = req.app.get("io");
+  if (io) {
+    io.emit("dashboard:update", {
+      type,
+      timestamp: new Date(),
+      ...payload
+    });
+    console.log(`📡 Socket emitted: ${type}`);
+  }
+};
+
+/**
  * Convert time string to minutes
  */
 const toMinutes = (time) => {
@@ -514,6 +529,14 @@ lunchOutTime: finalLunchOutTime,     // ✅ Store lunch out
 
       // ✅ Apply to project balance (DEVELOPER only)
       await applyAttendanceToProject(record, req.user);
+      
+      // 🔔 Unified socket event for dashboard update
+      emitDashboardUpdate(req, "ATTENDANCE_UPDATED", {
+        attendanceId: record._id,
+        date,
+        userId: req.user.id,
+        status
+      });
 
       // Extra hours need approval for comp-off (if at least 1 hour)
       if (extraHoursWorked >= 1) {
@@ -1046,6 +1069,15 @@ if (request.toStatus === "PRESENT HALF DAY") {
         };
 
         await attendanceDoc.save();
+        
+        // 🔔 Unified socket event for attendance decision
+        emitDashboardUpdate(req, "ATTENDANCE_DECISION", {
+          requestId: request._id,
+          date: request.date,
+          userId: request.user?._id,
+          decision,
+          status: request.toStatus
+        });
       }
 
       // Update request status
@@ -1053,6 +1085,15 @@ if (request.toStatus === "PRESENT HALF DAY") {
       request.decidedBy = req.user.id;
       request.decisionAt = new Date();
       await request.save();
+      
+      // 🔔 Unified socket event for attendance update
+      emitDashboardUpdate(req, "ATTENDANCE_UPDATED", {
+        requestId: request._id,
+        date: request.date,
+        userId: request.user?._id,
+        status: request.toStatus,
+        decision
+      });
 
       // Log the decision
       await createLog({
@@ -1116,6 +1157,13 @@ router.delete(
 
       // Delete the attendance record
       await Attendance.findByIdAndDelete(req.params.id);
+      
+      // 🔔 Unified socket event for attendance deletion
+      emitDashboardUpdate(req, "ATTENDANCE_DELETED", {
+        attendanceId: record._id,
+        date: record.date,
+        userId: record.user?._id
+      });
 
       // Delete associated attendance requests
       await AttendanceRequest.deleteMany({ attendance: record._id });

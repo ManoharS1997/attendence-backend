@@ -71,7 +71,11 @@ router.get("/:id/download", authMiddleware, async (req, res) => {
 <title>Payslip</title>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans&display=swap" rel="stylesheet">
 <style>
-body { font-family: Arial, sans-serif; background: #f4f7fb; padding: 24px; }
+body { 
+  font-family: 'DejaVu Sans', 'Noto Sans', sans-serif;
+  background: #f4f7fb; 
+  padding: 24px; 
+}
 .payslip { max-width: 900px; margin: auto; background: #fff; border-radius: 10px; padding: 24px; box-shadow: 0 8px 30px rgba(0,0,0,0.12); }
 .header { text-align: center; border-bottom: 3px solid #2563eb; padding-bottom: 12px; margin-bottom: 20px; }
 .info { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; font-size: 14px; }
