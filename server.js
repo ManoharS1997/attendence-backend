@@ -9,6 +9,13 @@ import { connectDB } from "./config/db.js";
 import logArchiveJob from "./jobs/logArchiveJob.js";
 import birthdayReminderJob from "./jobs/birthdayReminderJob.js";
 
+// ✅ Add cron and model imports for 6PM summary
+import cron from "node-cron";
+import User from "./models/User.js";
+import Attendance from "./models/Attendance.js";
+import Task from "./models/Task.js";
+import Notification from "./models/Notification.js";
+
 // ===================== ROUTES =====================
 import authRoutes from "./routes/authRoutes.js";
 import attendanceRoutes from "./routes/attendanceRoutes.js";
@@ -124,11 +131,80 @@ async function startServer() {
     logArchiveJob();
     birthdayReminderJob();
 
+    // ===================== 6PM DAILY MANAGER SUMMARY =====================
+    cron.schedule("* * * * *", async () => {
+      try {
+        console.log("⏰ Running 6PM Manager Daily Summary Job");
+
+        const today = new Date();
+        const day = String(today.getDate()).padStart(2, "0");
+        const month = String(today.getMonth() + 1).padStart(2, "0");
+        const year = today.getFullYear();
+        const formattedDate = `${day}-${month}-${year}`;
+
+        const managers = await User.find({ role: "HR" });
+        const employees = await User.find({ role: "employee" });
+
+        for (let manager of managers) {
+          for (let emp of employees) {
+            const attendance = await Attendance.findOne({
+              user: emp._id,
+              date: formattedDate,
+            });
+
+            const completedTasks = await Task.countDocuments({
+              assignedUserId: emp._id,
+              status: "COMPLETED",
+              createdAt: {
+                $gte: new Date(year, today.getMonth(), today.getDate()),
+              },
+            });
+
+            const hours = attendance?.hoursWorked || 0;
+            const lunch = attendance?.lunchBreakMinutes || 0;
+            const status = attendance?.status || "NO RECORD";
+
+            const title = `Daily Summary - ${emp.fullName} - ${formattedDate}`;
+
+            const existing = await Notification.findOne({
+              user: manager._id,
+              title,
+            });
+
+            if (!existing) {
+              await Notification.create({
+                user: manager._id,
+                type: "info",
+                title,
+                message: `Hours: ${hours} hrs | Lunch: ${lunch} mins | Tasks: ${completedTasks} | Status: ${status}`,
+                month: today.getMonth() + 1,
+                year: year,
+                priority: 3,
+              });
+
+              // 🔔 Real-time socket emit (optional but powerful)
+              io.emit("new-notification", {
+                managerId: manager._id,
+                title,
+              });
+            }
+          }
+        }
+
+        console.log("✅ 6PM Summary Completed");
+      } catch (err) {
+        console.error("❌ 6PM Summary Error:", err);
+      }
+    });
+
+    // ===================== START SERVER =====================
     httpServer.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
       console.log("🎂 Birthday reminder job active");
       console.log("🔌 Socket.IO enabled");
+      console.log("⏰ 6PM Manager Summary job active");
     });
+
   } catch (err) {
     console.error("❌ Server startup failed:", err);
     process.exit(1);
