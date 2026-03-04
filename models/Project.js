@@ -164,27 +164,26 @@ const projectSchema = new mongoose.Schema(
     },
 
     /* =====================================================
-       PROJECT STATUS & CONTROL
-       ===================================================== */
-    status: {
-      type: String,
-      enum: ["DRAFT", "APPROVED", "REJECTED", "COMPLETED", "ARCHIVED"],
-      default: "DRAFT",
-    },
-
-    /* =====================================================
-       PROJECT PHASE (OPTIONAL CONTROL)
-       ===================================================== */
-    currentPhase: {
-      type: String,
-      enum: ["PLANNING", "DEVELOPMENT", "TESTING", "DEPLOYMENT", "REVIEW", "COMPLETED"],
-      default: "PLANNING",
-    },
-
-    /* =====================================================
        ASSIGNED EMPLOYEES WITH ROLES
        ===================================================== */
     assignments: [assignmentSchema],
+
+    /* =====================================================
+       ACTIVITY LOGS
+       ===================================================== */
+    activityLogs: [
+      {
+        action: String,
+        user: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "User",
+        },
+        date: {
+          type: Date,
+          default: Date.now,
+        },
+      },
+    ],
   },
   { timestamps: true }
 );

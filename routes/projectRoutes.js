@@ -59,8 +59,6 @@ router.post(
         endDate,            // "DD-MM-YYYY" or ISO string
         totalEstimatedHours, // Can be overridden by manager
         durationMonths,      // Can be overridden by manager
-        currentPhase = "PLANNING",
-        status = "DRAFT",
       } = req.body;
 
       // Validate required fields
@@ -132,8 +130,6 @@ router.post(
         endDate: end,
         totalEstimatedHours: finalTotalHours,
         durationMonths: finalDurationMonths,
-        currentPhase,
-        status,
         consumedHours: 0,
         balanceHours: finalTotalHours,
         assignments: [],
@@ -146,7 +142,6 @@ router.post(
         projectId: project._id,
         projectName: project.name,
         projectCode: project.code,
-        status: project.status
       });
 
       // Log creation
@@ -220,7 +215,6 @@ router.get("/my", authMiddleware, async (req, res) => {
       // Employee: Get projects they're assigned to
       projects = await Project.find({
         "assignments.user": userId,
-        status: { $ne: "ARCHIVED" }
       })
       .populate({
         path: "assignments.user",
@@ -232,16 +226,13 @@ router.get("/my", authMiddleware, async (req, res) => {
       // Manager: Get projects they manage
       projects = await Project.find({
         manager: userId,
-        status: { $ne: "ARCHIVED" }
       })
       .populate("assignments.user", "fullName email role")
       .populate("manager", "fullName email")
       .sort({ createdAt: -1 });
     } else if (userRole === "admin") {
-      // Admin: Get all non-archived projects
-      projects = await Project.find({
-        status: { $ne: "ARCHIVED" }
-      })
+      // Admin: Get all projects
+      projects = await Project.find({})
       .populate("assignments.user", "fullName email role")
       .populate("manager", "fullName email")
       .sort({ createdAt: -1 });
@@ -304,7 +295,6 @@ router.get("/my", authMiddleware, async (req, res) => {
           name: projectObj.name,
           code: projectObj.code,
           description: projectObj.description,
-          status: projectObj.status,
           startDate: projectObj.startDate,
           endDate: projectObj.endDate,
           totalEstimatedHours: projectObj.totalEstimatedHours,
@@ -316,8 +306,8 @@ router.get("/my", authMiddleware, async (req, res) => {
           workingDays,
           calculatedTotalHours,
           calculationDifference: projectObj.totalEstimatedHours - calculatedTotalHours,
-          myRole: myRole || "Not assigned", // Ensure "Not assigned" is only for employees without role
-          canCreateTask: myRole !== null && projectObj.status === "APPROVED"
+          myRole: myRole || "Not assigned",
+          canCreateTask: myRole !== null
         };
       })
     );
@@ -503,10 +493,10 @@ router.get("/:id", authMiddleware, async (req, res) => {
       calculatedTotalHours,
       calculationDifference: project.totalEstimatedHours - calculatedTotalHours,
       recentTasks: tasks,
-      myRole: myRole || "Not assigned", // Important: This fixes the frontend display
+      myRole: myRole || "Not assigned",
       myAssignment,
       stats,
-      canCreateTask: myRole !== null && project.status === "APPROVED"
+      canCreateTask: myRole !== null
     });
   } catch (err) {
     console.error("Get project error:", err);
@@ -522,7 +512,7 @@ router.get("/for-task-creation", authMiddleware, async (req, res) => {
     const userId = req.user.id;
     const userRole = req.user.role;
 
-    let query = { status: "APPROVED" };
+    let query = {};
     
     if (userRole === "employee") {
       query["assignments.user"] = userId;
@@ -532,7 +522,7 @@ router.get("/for-task-creation", authMiddleware, async (req, res) => {
     // Admin doesn't create tasks, so not included
 
     const projects = await Project.find(query)
-      .select("name code status assignments manager")
+      .select("name code assignments manager")
       .populate("assignments.user", "fullName email")
       .populate("manager", "fullName email")
       .sort({ name: 1 });
@@ -554,7 +544,6 @@ router.get("/for-task-creation", authMiddleware, async (req, res) => {
         _id: project._id,
         name: project.name,
         code: project.code,
-        status: project.status,
         myRole: myRole || "Not assigned",
         hasRole: myRole !== null,
         displayText: `${project.name} (${project.code}) - ${myRole || "No role"}`
@@ -652,12 +641,6 @@ router.post(
         });
       }
 
-      if (project.status === "ARCHIVED") {
-        return res.status(400).json({ 
-          message: "Cannot assign to archived projects" 
-        });
-      }
-
       const employee = await User.findById(userId);
       if (!employee) {
         return res.status(404).json({ message: "User not found" });
@@ -744,154 +727,6 @@ router.post(
 );
 
 /* =====================================================
-   APPROVE PROJECT
-   ===================================================== */
-router.patch(
-  "/:id/approve",
-  authMiddleware,
-  requireRole(["manager"]),
-  async (req, res) => {
-    try {
-      const project = await Project.findById(req.params.id);
-      if (!project) return res.status(404).json({ message: "Project not found" });
-
-      // Check if user is the project manager
-      if (project.manager.toString() !== req.user.id.toString()) {
-        return res.status(403).json({ 
-          message: "You are not the manager of this project" 
-        });
-      }
-
-      if (project.status === "APPROVED") {
-        return res.status(400).json({ 
-          message: "Project is already approved" 
-        });
-      }
-
-      if (project.status === "ARCHIVED") {
-        return res.status(400).json({ 
-          message: "Cannot approve archived projects" 
-        });
-      }
-
-      project.status = "APPROVED";
-      await project.save();
-
-      // 🚀 Socket emit for project approval
-      emitDashboardUpdate(req, "PROJECT_APPROVED", {
-        projectId: project._id,
-        projectName: project.name,
-        projectCode: project.code
-      });
-
-      // Log approval
-      try {
-        await Log.create({
-          type: "OPERATION",
-          action: "APPROVE_PROJECT",
-          entity: "PROJECT",
-          user: req.user.id,
-          userName: req.user.fullName,
-          userEmail: req.user.email,
-          role: req.user.role,
-          description: `Approved project ${project.name}`,
-          status: "SUCCESS",
-          ipAddress: getClientIp(req),
-          details: {
-            projectId: project._id,
-            previousStatus: "DRAFT",
-          },
-        });
-      } catch (logErr) {
-        console.error("Log APPROVE_PROJECT error:", logErr.message);
-      }
-
-      res.json({ 
-        message: "Project approved", 
-        project 
-      });
-    } catch (err) {
-      console.error("Approve project error:", err);
-      res.status(500).json({ message: "Approval failed" });
-    }
-  }
-);
-
-/* =====================================================
-   REJECT PROJECT
-   ===================================================== */
-router.patch(
-  "/:id/reject",
-  authMiddleware,
-  requireRole(["manager"]),
-  async (req, res) => {
-    try {
-      const project = await Project.findById(req.params.id);
-      if (!project) return res.status(404).json({ message: "Project not found" });
-
-      // Check if user is the project manager
-      if (project.manager.toString() !== req.user.id.toString()) {
-        return res.status(403).json({ 
-          message: "You are not the manager of this project" 
-        });
-      }
-
-      if (project.status === "REJECTED") {
-        return res.status(400).json({ 
-          message: "Project is already rejected" 
-        });
-      }
-
-      if (project.status === "ARCHIVED") {
-        return res.status(400).json({ 
-          message: "Cannot reject archived projects" 
-        });
-      }
-
-      project.status = "REJECTED";
-      await project.save();
-
-      // 🚀 Socket emit for project rejection
-      emitDashboardUpdate(req, "PROJECT_REJECTED", {
-        projectId: project._id,
-        projectName: project.name,
-        projectCode: project.code
-      });
-
-      // Log rejection
-      try {
-        await Log.create({
-          type: "OPERATION",
-          action: "REJECT_PROJECT",
-          entity: "PROJECT",
-          user: req.user.id,
-          userName: req.user.fullName,
-          userEmail: req.user.email,
-          role: req.user.role,
-          description: `Rejected project ${project.name}`,
-          status: "SUCCESS",
-          ipAddress: getClientIp(req),
-          details: {
-            projectId: project._id,
-            previousStatus: project.status,
-          },
-        });
-      } catch (logErr) {
-        console.error("Log REJECT_PROJECT error:", logErr.message);
-      }
-
-      res.json({ 
-        message: "Project rejected", 
-        project 
-      });
-    } catch (err) {
-      console.error("Reject project error:", err);
-      res.status(500).json({ message: "Rejection failed" });
-    }
-  }
-);
-
-/* =====================================================
    COMPLETE PROJECT (WITH BALANCE CHECK & OVERRUN HANDLING)
    ===================================================== */
 router.patch(
@@ -912,12 +747,6 @@ router.patch(
         });
       }
 
-      if (project.status !== "APPROVED") {
-        return res.status(400).json({
-          message: "Project must be approved before completion"
-        });
-      }
-
       // Handle negative balance with overrun reason
       if (project.balanceHours < 0) {
         if (!overrunReason || overrunReason.trim().length < 10) {
@@ -933,7 +762,6 @@ router.patch(
         project.overrunAt = new Date();
       }
 
-      project.status = "COMPLETED";
       project.completedAt = new Date();
       await project.save();
 
@@ -1002,12 +830,6 @@ router.patch(
       if (project.manager.toString() !== req.user.id.toString()) {
         return res.status(403).json({ 
           message: "You are not the manager of this project" 
-        });
-      }
-
-      if (project.status === "ARCHIVED") {
-        return res.status(400).json({ 
-          message: "Cannot update archived projects" 
         });
       }
 
@@ -1175,144 +997,6 @@ router.delete(
       res.json(populated);
     } catch (err) {
       console.error("Unassign project error:", err);
-      res.status(500).json({ message: "Server error" });
-    }
-  }
-);
-
-/* =====================================================
-   ARCHIVE PROJECT
-   ===================================================== */
-router.post(
-  "/:id/archive",
-  authMiddleware,
-  requireRole(["manager"]),
-  async (req, res) => {
-    try {
-      const project = await Project.findById(req.params.id);
-      if (!project) {
-        return res.status(404).json({ message: "Project not found" });
-      }
-
-      // Check if user is the project manager
-      if (project.manager.toString() !== req.user.id.toString()) {
-        return res.status(403).json({ 
-          message: "You are not the manager of this project" 
-        });
-      }
-
-      if (project.status === "ARCHIVED") {
-        return res.status(400).json({ 
-          message: "Project is already archived" 
-        });
-      }
-
-      project.status = "ARCHIVED";
-      project.archivedAt = new Date();
-      await project.save();
-
-      // 🚀 Socket emit for project archive
-      emitDashboardUpdate(req, "PROJECT_STATUS_CHANGED", {
-        projectId: project._id,
-        projectName: project.name,
-        projectCode: project.code,
-        newStatus: "ARCHIVED",
-        action: "ARCHIVE"
-      });
-
-      // Log archiving
-      try {
-        await Log.create({
-          type: "OPERATION",
-          action: "ARCHIVE_PROJECT",
-          entity: "PROJECT",
-          user: req.user.id,
-          userName: req.user.fullName,
-          userEmail: req.user.email,
-          role: req.user.role,
-          description: `Archived project ${project.name}`,
-          status: "SUCCESS",
-          ipAddress: getClientIp(req),
-          details: {
-            projectId: project._id,
-          },
-        });
-      } catch (logErr) {
-        console.error("Log ARCHIVE_PROJECT error:", logErr.message);
-      }
-
-      res.json(project);
-    } catch (err) {
-      console.error("Archive project error:", err);
-      res.status(500).json({ message: "Server error" });
-    }
-  }
-);
-
-/* =====================================================
-   UNARCHIVE PROJECT
-   ===================================================== */
-router.post(
-  "/:id/unarchive",
-  authMiddleware,
-  requireRole(["manager"]),
-  async (req, res) => {
-    try {
-      const project = await Project.findById(req.params.id);
-      if (!project) {
-        return res.status(404).json({ message: "Project not found" });
-      }
-
-      // Check if user is the project manager
-      if (project.manager.toString() !== req.user.id.toString()) {
-        return res.status(403).json({ 
-          message: "You are not the manager of this project" 
-        });
-      }
-
-      if (project.status !== "ARCHIVED") {
-        return res.status(400).json({ 
-          message: "Project is not archived" 
-        });
-      }
-
-      project.status = "DRAFT";
-      project.archivedAt = null;
-      await project.save();
-
-      // 🚀 Socket emit for project unarchive
-      emitDashboardUpdate(req, "PROJECT_STATUS_CHANGED", {
-        projectId: project._id,
-        projectName: project.name,
-        projectCode: project.code,
-        newStatus: "DRAFT",
-        action: "UNARCHIVE"
-      });
-
-      // Log unarchiving
-      try {
-        await Log.create({
-          type: "OPERATION",
-          action: "UNARCHIVE_PROJECT",
-          entity: "PROJECT",
-          user: req.user.id,
-          userName: req.user.fullName,
-          userEmail: req.user.email,
-          role: req.user.role,
-          description: `Unarchived project ${project.name}`,
-          status: "SUCCESS",
-          ipAddress: getClientIp(req),
-          details: {
-            projectId: project._id,
-          },
-        });
-      } catch (logErr) {
-        console.error("Log UNARCHIVE_PROJECT error:", logErr.message);
-      }
-
-      res.json(project);
-    } catch (err) {
-      console.error("Unarchive project error:", err);
       res.status(500).json({ message: "Server error" });
     }
   }

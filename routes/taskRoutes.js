@@ -56,9 +56,9 @@ const canEditTask = (user, task) => {
     return true;
   }
 
-  // Manager can edit ANY task (employee or manager created)
+  // Manager is view only
   if (userRole === "MANAGER") {
-    return true;
+    return false;
   }
 
   return false;
@@ -96,7 +96,7 @@ const applyCompletedTaskToProject = async (task, project) => {
   const taskRole = normalizeRole(task.assignedUserRole || task.role);
   if (taskRole === "DEVELOPER") return;
 
-  const hours = task.estimateHours || 0;
+  const hours = task.estHours || 0;                    // FIXED: estimateHours → estHours
   if (hours <= 0) return;
 
   // Find or create monthly consumption entry
@@ -154,26 +154,27 @@ router.get("/all-admin", async (req, res) => {
       .populate("createdByUserId", "fullName email employeeId")
       .sort({ createdAt: -1 });
 
-    // Format tasks for admin view
+    // Format tasks for admin view with NEW field names
     const formattedTasks = tasks.map(task => ({
       _id: task._id,
       project: task.projectId ? `${task.projectId.name} (${task.projectId.code})` : 'N/A',
-      requirement: task.title || 'N/A',
-      requirementType: task.requirementType || 'N/A',
+      requirement: task.requirement || 'N/A',                    // FIXED: recentRequirement → requirement
+      type: task.type || 'N/A',                                   // FIXED: requirementType → type
       assignedTo: task.assignedUserId ? `${task.assignedUserId.fullName} (${task.assignedUserId.email})` : 'Unassigned',
+      employeeName: task.employeeName || 'N/A',                   // ADDED: employeeName
       status: task.status || 'OPEN',
       scope: task.scope || 'AGREED',
       notes: task.notes || '',
       discussedDate: task.discussedDate || '',
-      startDate: task.estimatedDate || '',
-      closeDate: task.originalClosureDate || '',
-      workingDays: task.noOfDays || 0,
+      startDate: task.startDate || '',                             // FIXED: estimatedDate → startDate
+      closeDate: task.closeDate || '',                             // FIXED: originalClosureDate → closeDate
+      workingDays: task.workingDays || 0,                          // FIXED: noOfDays → workingDays
       clientPriority: task.clientPriority || 'P3',
-      givenBy: task.prioritySource === 'CLIENT' ? 'Client' : 'Internal',
-      createdBy: task.createdByUserId ? `${task.createdByUserId.fullName}` : 'Unknown',
+      givenBy: task.givenBy || 'N/A',
+      createdBy: task.createdByName || 'Unknown',                  // ADDED: createdByName
       createdByRole: task.createdByRole,
       createdAt: task.createdAt,
-      estimateHours: task.estimateHours || 0,
+      estHours: task.estHours || 0,                                 // FIXED: estimateHours → estHours
       month: task.month,
       year: task.year
     }));
@@ -186,232 +187,151 @@ router.get("/all-admin", async (req, res) => {
 });
 
 /* =====================================================
-   CREATE TASK - FIXED FOR EMPLOYEE & MANAGER
+   CREATE TASK - ONLY EMPLOYEE
    ===================================================== */
 router.post("/", async (req, res) => {
   try {
     const {
       projectId,
+      projectName,                                         // ADDED: projectName
       assignedUserId,
-      assignedUserRole,
       title,
       description,
-      estimateHours,
+      estHours,                                            // FIXED: estimateHours → estHours
       month,
       year,
       notes,
-      recentRequirement,
-      requirementType,
+      requirement,                                         // FIXED: recentRequirement → requirement
+      type,                                                // FIXED: requirementType → type
       scope,
       discussedDate,
-      originalClosureDate,
-      estimatedDate,
+      closeDate,                                           // FIXED: originalClosureDate → closeDate
+      startDate,                                           // FIXED: estimatedDate → startDate
       clientPriority,
-      prioritySource
+      prioritySource,
+      employeeName,                                        // ADDED: employeeName
+      createdByName                                        // ADDED: createdByName
     } = req.body;
 
     const userRole = req.user.role;
     const userId = req.user._id;
 
-    // VALIDATION BASED ON USER ROLE
-    let validationErrors = [];
-
-    if (userRole === "employee") {
-      // Employee: Only require estimateHours
-      if (!estimateHours) {
-        validationErrors.push("estimateHours");
-      }
-      
-      // Auto-fill missing fields for employees
-      let finalProjectId = projectId;
-      if (!finalProjectId) {
-        // Get employee's first assigned project
-        const userProjects = await Project.find({
-          "assignments.user": userId,
-          status: "APPROVED"
-        });
-        
-        if (userProjects.length === 0) {
-          return res.status(400).json({
-            message: "You are not assigned to any approved project"
-          });
-        }
-        finalProjectId = userProjects[0]._id;
-      }
-
-      // Validate project exists and user is assigned
-      const project = await Project.findById(finalProjectId);
-      if (!project) {
-        return res.status(404).json({ message: "Project not found" });
-      }
-
-      const isAssigned = project.assignments?.some(
-        assignment => assignment.user.toString() === userId.toString()
-      );
-      if (!isAssigned) {
-        return res.status(403).json({
-          message: "You are not assigned to this project"
-        });
-      }
-
-      // Auto-fill task title if not provided
-      const finalTitle = title || `Task ${new Date().toLocaleDateString()} ${Date.now().toString().slice(-4)}`;
-      
-      // Auto-set current month/year
-      const now = new Date();
-      const finalMonth = month || now.getMonth() + 1;
-      const finalYear = year || now.getFullYear();
-
-      // Create task data for employee
-      const taskData = {
-        projectId: finalProjectId,
-        assignedUserId: userId,
-        assignedUserRole: "EMPLOYEE",
-        createdByUserId: userId,
-        createdByRole: "employee", // lowercase as per schema
-        title: finalTitle.trim(),
-        description: description?.trim() || "",
-        estimateHours: Math.max(Number(estimateHours), 0.5),
-        month: finalMonth,
-        year: finalYear,
-        notes: notes?.trim() || "",
-        recentRequirement: recentRequirement?.trim() || "General task",
-        requirementType: requirementType || "NEW",
-        status: "OPEN",
-        scope: scope || "AGREED",
-        discussedDate: discussedDate || "",
-        originalClosureDate: originalClosureDate || "",
-        estimatedDate: estimatedDate || "",
-        noOfDays: 0,
-        clientPriority: clientPriority || "P3",
-        prioritySource: prioritySource || "CLIENT"
-      };
-
-      // Calculate noOfDays if dates provided
-      if (originalClosureDate && estimatedDate) {
-        const start = new Date(originalClosureDate);
-        const end = new Date(estimatedDate);
-        const diffTime = Math.abs(end - start);
-        taskData.noOfDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      }
-
-      const task = await Task.create(taskData);
-      const populatedTask = await Task.findById(task._id)
-        .populate("projectId", "name code")
-        .populate("assignedUserId", "fullName email")
-        .populate("createdByUserId", "fullName email");
-
-      // 🚀 Emit socket event for instant dashboard update
-      emitDashboardUpdate(req, "TASK_CREATED", {
-        taskId: populatedTask._id,
-        projectId: finalProjectId,
-        createdBy: userId,
-        role: "employee"
-      });
-
-      return res.status(201).json(populatedTask);
-
-    } else if (userRole === "manager") {
-      // Manager: Require basic fields
-      if (!projectId) validationErrors.push("projectId");
-      if (!title) validationErrors.push("title");
-      if (!estimateHours) validationErrors.push("estimateHours");
-      
-      if (validationErrors.length > 0) {
-        return res.status(400).json({
-          message: `Missing required fields: ${validationErrors.join(", ")}`
-        });
-      }
-
-      // Validate project exists
-      const project = await Project.findById(projectId);
-      if (!project) {
-        return res.status(404).json({ message: "Project not found" });
-      }
-
-      // Auto-set current month/year if not provided
-      const now = new Date();
-      const finalMonth = month || now.getMonth() + 1;
-      const finalYear = year || now.getFullYear();
-
-      // Determine assigned user and role
-      let finalAssignedUserId = assignedUserId || userId;
-      let finalAssignedUserRole = assignedUserRole || "EMPLOYEE";
-      
-      // If manager is assigning to someone else, use provided role
-      if (assignedUserId && assignedUserId !== userId.toString()) {
-        finalAssignedUserRole = assignedUserRole || "EMPLOYEE";
-      } else {
-        // Manager creating task for themselves
-        finalAssignedUserRole = "MANAGER";
-      }
-
-      // Validate role
-      const validRoles = ["EMPLOYEE", "MANAGER", "ADMIN"];
-      if (!validRoles.includes(finalAssignedUserRole.toUpperCase())) {
-        return res.status(400).json({ 
-          message: "assignedUserRole must be one of: EMPLOYEE, MANAGER, ADMIN" 
-        });
-      }
-
-      // Create task data for manager
-      const taskData = {
-        projectId,
-        assignedUserId: finalAssignedUserId,
-        assignedUserRole: finalAssignedUserRole.toUpperCase(),
-        createdByUserId: userId,
-        createdByRole: "manager", // lowercase as per schema
-        title: title.trim(),
-        description: description?.trim() || "",
-        estimateHours: Math.max(Number(estimateHours), 0.5),
-        month: finalMonth,
-        year: finalYear,
-        notes: notes?.trim() || "",
-        recentRequirement: recentRequirement?.trim() || "Manager task",
-        requirementType: requirementType || "NEW",
-        status: "OPEN",
-        scope: scope || "AGREED",
-        discussedDate: discussedDate || "",
-        originalClosureDate: originalClosureDate || "",
-        estimatedDate: estimatedDate || "",
-        noOfDays: 0,
-        clientPriority: clientPriority || "P3",
-        prioritySource: prioritySource || "MANAGER"
-      };
-
-      // Calculate noOfDays if dates provided
-      if (originalClosureDate && estimatedDate) {
-        const start = new Date(originalClosureDate);
-        const end = new Date(estimatedDate);
-        const diffTime = Math.abs(end - start);
-        taskData.noOfDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      }
-
-      const task = await Task.create(taskData);
-      const populatedTask = await Task.findById(task._id)
-        .populate("projectId", "name code")
-        .populate("assignedUserId", "fullName email")
-        .populate("createdByUserId", "fullName email");
-
-      // 🚀 Emit socket event for instant dashboard update
-      emitDashboardUpdate(req, "TASK_CREATED", {
-        taskId: populatedTask._id,
-        projectId,
-        createdBy: userId,
-        role: "manager"
-      });
-
-      return res.status(201).json(populatedTask);
-
-    } else if (userRole === "admin") {
+    // Only employees can create tasks
+    if (userRole !== "employee") {
       return res.status(403).json({ 
-        message: "Admin cannot create tasks" 
-      });
-    } else {
-      return res.status(403).json({ 
-        message: "Unauthorized access" 
+        message: "Only employees can create tasks" 
       });
     }
+
+    // Employee: Only require estHours
+    if (!estHours) {
+      return res.status(400).json({
+        message: "Missing required field: estHours"
+      });
+    }
+    
+    // Auto-fill missing fields for employees
+    let finalProjectId = projectId;
+    let finalProjectName = projectName;
+    
+    if (!finalProjectId) {
+      // Get employee's first assigned project
+      const userProjects = await Project.find({
+        "assignments.user": userId,
+        status: "APPROVED"
+      });
+      
+      if (userProjects.length === 0) {
+        return res.status(400).json({
+          message: "You are not assigned to any approved project"
+        });
+      }
+      finalProjectId = userProjects[0]._id;
+      finalProjectName = userProjects[0].name;
+    } else {
+      // Get project name from database if not provided
+      if (!finalProjectName) {
+        const project = await Project.findById(finalProjectId);
+        if (project) {
+          finalProjectName = project.name;
+        }
+      }
+    }
+
+    // Validate project exists and user is assigned
+    const project = await Project.findById(finalProjectId);
+    if (!project) {
+      return res.status(404).json({ message: "Project not found" });
+    }
+
+    const isAssigned = project.assignments?.some(
+      assignment => assignment.user.toString() === userId.toString()
+    );
+    if (!isAssigned) {
+      return res.status(403).json({
+        message: "You are not assigned to this project"
+      });
+    }
+
+    // Auto-fill task title if not provided
+    const finalTitle = title || `Task ${new Date().toLocaleDateString()} ${Date.now().toString().slice(-4)}`;
+    
+    // Auto-set current month/year
+    const now = new Date();
+    const finalMonth = month || now.getMonth() + 1;
+    const finalYear = year || now.getFullYear();
+
+    // Create task data for employee with NEW field names
+    const taskData = {
+      projectId: finalProjectId,
+      projectName: finalProjectName,                       // ADDED: projectName
+      assignedUserId: userId,
+      createdByUserId: userId,
+      createdByRole: "employee",
+      employeeName: employeeName || req.user.fullName || "Employee",    // ADDED: employeeName
+      createdByName: createdByName || req.user.fullName || "Employee",  // ADDED: createdByName
+      title: finalTitle.trim(),
+      description: description?.trim() || "",
+      estHours: Math.max(Number(estHours), 0.5),           // FIXED: estimateHours → estHours
+      month: finalMonth,
+      year: finalYear,
+      notes: notes?.trim() || "",
+      requirement: requirement?.trim() || "General task",  // FIXED: recentRequirement → requirement
+      type: type || "NEW",                                  // FIXED: requirementType → type
+      status: "OPEN",
+      scope: scope || "AGREED",
+      discussedDate: discussedDate || "",
+      closeDate: closeDate || "",                           // FIXED: originalClosureDate → closeDate
+      startDate: startDate || "",                           // FIXED: estimatedDate → startDate
+      workingDays: 0,                                        // FIXED: noOfDays → workingDays
+      clientPriority: clientPriority || "P3",
+      prioritySource: prioritySource || "CLIENT",
+      givenBy: req.user.fullName || "Employee"
+    };
+
+    // Calculate workingDays if dates provided
+    if (closeDate && startDate) {
+      const start = new Date(startDate);
+      const end = new Date(closeDate);
+      const diffTime = Math.abs(end - start);
+      taskData.workingDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    }
+
+    const task = await Task.create(taskData);
+    const populatedTask = await Task.findById(task._id)
+      .populate("projectId", "name code")
+      .populate("assignedUserId", "fullName email")
+      .populate("createdByUserId", "fullName email");
+
+    // 🚀 Emit socket event for instant dashboard update
+    emitDashboardUpdate(req, "TASK_CREATED", {
+      taskId: populatedTask._id,
+      projectId: finalProjectId,
+      createdBy: userId,
+      role: "employee"
+    });
+
+    return res.status(201).json(populatedTask);
 
   } catch (err) {
     console.error("Create task error:", err);
@@ -476,30 +396,31 @@ router.get("/my", async (req, res) => {
       .populate("createdByUserId", "fullName email employeeId")
       .sort({ createdAt: -1 });
 
-    // Format tasks with all fields
+    // Format tasks with all fields (Employee View)
     const formattedTasks = tasks.map(task => ({
       _id: task._id,
       sno: tasks.indexOf(task) + 1,
-      project: task.projectId ? `${task.projectId.name} (${task.projectId.code})` : 'N/A',
+      project: task.projectName || (task.projectId ? task.projectId.name : 'N/A'),  // ADDED: projectName
       projectStatus: task.projectId?.status || 'N/A',
-      requirement: task.title || 'N/A',
-      requirementType: task.requirementType || 'N/A',
+      requirement: task.requirement || 'N/A',                // FIXED: recentRequirement → requirement
+      type: task.type || 'N/A',                               // FIXED: requirementType → type
       assignedTo: task.assignedUserId ? task.assignedUserId.fullName : 'Unassigned',
       assignedToEmail: task.assignedUserId?.email || '',
+      employeeName: task.employeeName || 'N/A',               // ADDED: employeeName
       status: task.status || 'OPEN',
       scope: task.scope || 'AGREED',
       notes: task.notes || '',
       discussedDate: task.discussedDate || '',
-      startDate: task.estimatedDate || '',
-      closeDate: task.originalClosureDate || '',
-      workingDays: task.noOfDays || 0,
+      startDate: task.startDate || '',                         // FIXED: estimatedDate → startDate
+      closeDate: task.closeDate || '',                         // FIXED: originalClosureDate → closeDate
+      workingDays: task.workingDays || 0,                      // FIXED: noOfDays → workingDays
       clientPriority: task.clientPriority || 'P3',
-      givenBy: task.prioritySource === 'CLIENT' ? 'Client' : 'Internal',
-      createdBy: task.createdByUserId ? task.createdByUserId.fullName : 'Unknown',
+      givenBy: task.givenBy || 'N/A',
+      createdBy: task.createdByName || 'Unknown',              // ADDED: createdByName
       createdByEmail: task.createdByUserId?.email || '',
       createdByRole: task.createdByRole,
       createdAt: task.createdAt,
-      estimateHours: task.estimateHours || 0,
+      estHours: task.estHours || 0,                             // FIXED: estimateHours → estHours
       month: task.month,
       year: task.year,
       canEdit: canEditTask(req.user, task)
@@ -563,25 +484,26 @@ router.get("/project/:projectId", async (req, res) => {
       .populate("createdByUserId", "fullName email")
       .sort({ createdAt: -1 });
 
-    // Format tasks
+    // Format tasks with NEW field names
     const formattedTasks = tasks.map(task => ({
       _id: task._id,
       sno: tasks.indexOf(task) + 1,
-      project: `${project.name} (${project.code})`,
-      requirement: task.title,
-      type: task.requirementType,
+      project: task.projectName || `${project.name} (${project.code})`,  // ADDED: projectName
+      requirement: task.requirement,                                      // FIXED: recentRequirement → requirement
+      type: task.type,                                                    // FIXED: requirementType → type
       assignedTo: task.assignedUserId?.fullName || 'Unassigned',
+      employeeName: task.employeeName || 'N/A',                           // ADDED: employeeName
       status: task.status,
       scope: task.scope,
       notes: task.notes,
       discussedDate: task.discussedDate,
-      startDate: task.estimatedDate,
-      closeDate: task.originalClosureDate,
-      workingDays: task.noOfDays,
+      startDate: task.startDate,                                          // FIXED: estimatedDate → startDate
+      closeDate: task.closeDate,                                          // FIXED: originalClosureDate → closeDate
+      workingDays: task.workingDays,                                      // FIXED: noOfDays → workingDays
       clientPriority: task.clientPriority,
-      givenBy: task.prioritySource === 'CLIENT' ? 'Client' : 'Internal',
-      createdBy: task.createdByUserId?.fullName || 'Unknown',
-      estimateHours: task.estimateHours,
+      givenBy: task.givenBy || (task.prioritySource === 'CLIENT' ? 'Client' : 'Internal'),
+      createdBy: task.createdByName || 'Unknown',                         // ADDED: createdByName
+      estHours: task.estHours,                                            // FIXED: estimateHours → estHours
       canEdit: canEditTask(req.user, task)
     }));
 
@@ -627,29 +549,29 @@ router.get("/all-manager", async (req, res) => {
       .populate("createdByUserId", "fullName email employeeId")
       .sort({ createdAt: -1 });
 
-    // Format with all fields for manager view
+    // Format with all fields for manager view (Manager/Admin View)
     const formattedTasks = tasks.map((task, index) => ({
       sno: index + 1,
       _id: task._id,
-      project: task.projectId ? `${task.projectId.name} (${task.projectId.code})` : 'N/A',
-      requirement: task.title || 'N/A',
-      requirementType: task.requirementType || 'N/A',
-      employee: task.assignedUserId ? `${task.assignedUserId.fullName}` : 'Unassigned',
+      project: task.projectName || (task.projectId ? `${task.projectId.name} (${task.projectId.code})` : 'N/A'),  // ADDED: projectName
+      requirement: task.requirement || 'N/A',                // FIXED: recentRequirement → requirement
+      type: task.type || 'N/A',                               // FIXED: requirementType → type
+      employee: task.employeeName || 'N/A',                   // ADDED: employeeName
       status: task.status || 'OPEN',
       scope: task.scope || 'AGREED',
       notes: task.notes || '',
       discussedDate: task.discussedDate || '',
-      startDate: task.estimatedDate || '',
-      closeDate: task.originalClosureDate || '',
-      workingDays: task.noOfDays || 0,
+      startDate: task.startDate || '',                         // FIXED: estimatedDate → startDate
+      closeDate: task.closeDate || '',                         // FIXED: originalClosureDate → closeDate
+      workingDays: task.workingDays || 0,                      // FIXED: noOfDays → workingDays
       clientPriority: task.clientPriority || 'P3',
-      givenBy: task.prioritySource === 'CLIENT' ? 'Client' : 'Internal',
-      createdBy: task.createdByUserId ? task.createdByUserId.fullName : 'Unknown',
+      givenBy: task.givenBy || 'N/A',
+      createdBy: task.createdByName || 'Unknown',              // ADDED: createdByName
       createdByEmail: task.createdByUserId?.email || '',
       createdByRole: task.createdByRole,
       createdAt: task.createdAt,
-      estimateHours: task.estimateHours || 0,
-      canEdit: true // Manager can edit all tasks
+      estHours: task.estHours || 0,                             // FIXED: estimateHours → estHours
+      canEdit: false // Manager view only
     }));
 
     res.json(formattedTasks);
@@ -686,7 +608,21 @@ router.get("/:id", async (req, res) => {
       });
     }
 
-    res.json(task);
+    // Format single task with NEW field names
+    const formattedTask = {
+      ...task.toObject(),
+      requirement: task.requirement,
+      type: task.type,
+      startDate: task.startDate,
+      closeDate: task.closeDate,
+      workingDays: task.workingDays,
+      estHours: task.estHours,
+      projectName: task.projectName,
+      employeeName: task.employeeName,
+      createdByName: task.createdByName
+    };
+
+    res.json(formattedTask);
   } catch (err) {
     console.error("Get task error:", err);
     res.status(500).json({ message: "Error fetching task" });
@@ -732,7 +668,7 @@ router.patch("/:id", async (req, res) => {
 
     // Cannot edit counted tasks (balance safety)
     if (task.countedInProject) {
-      const blockedFields = ["estimateHours", "assignedUserRole", "status", "month", "year"];
+      const blockedFields = ["estHours", "assignedUserRole", "status", "month", "year"];
       for (const field of blockedFields) {
         if (updates[field] !== undefined) {
           return res.status(400).json({
@@ -753,17 +689,17 @@ router.patch("/:id", async (req, res) => {
       updates.assignedUserRole = updates.assignedUserRole.toUpperCase();
     }
 
-    // Validate estimate hours
-    if (updates.estimateHours !== undefined) {
-      updates.estimateHours = Math.max(Number(updates.estimateHours), 0.5);
+    // Validate est hours
+    if (updates.estHours !== undefined) {
+      updates.estHours = Math.max(Number(updates.estHours), 0.5);
     }
 
-    // Calculate noOfDays if dates are updated
-    if (updates.originalClosureDate && updates.estimatedDate) {
-      const start = new Date(updates.originalClosureDate);
-      const end = new Date(updates.estimatedDate);
+    // Calculate workingDays if dates are updated
+    if (updates.closeDate && updates.startDate) {
+      const start = new Date(updates.startDate);
+      const end = new Date(updates.closeDate);
       const diffTime = Math.abs(end - start);
-      updates.noOfDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      updates.workingDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
     }
 
     // Track status change for socket emission
@@ -788,7 +724,7 @@ router.patch("/:id", async (req, res) => {
       emitDashboardUpdate(req, "PROJECT_BALANCE_UPDATED", {
         projectId: project._id,
         taskId: updatedTask._id,
-        hours: updatedTask.estimateHours
+        hours: updatedTask.estHours
       });
     }
 

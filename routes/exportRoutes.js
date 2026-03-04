@@ -1,4 +1,3 @@
-// routes/exportRoutes.js
 import express from "express";
 import Attendance from "../models/Attendance.js";
 import AttendanceRequest from "../models/AttendanceRequest.js";
@@ -92,7 +91,7 @@ router.get(
   }
 );
 
-/* 2️⃣ TASKS CSV */
+/* 2️⃣ TASKS CSV - FIXED with new field names */
 router.get(
   "/tasks/csv",
   authMiddleware,
@@ -107,47 +106,44 @@ router.get(
       const tasks = await Task.find(q)
         .populate("assignedUserId", "fullName email")
         .populate("projectId", "name code")
+        .populate("createdByUserId", "fullName email")
         .sort({ createdAt: 1 });
 
       const header = [
+        "SNO",
         "Project",
-        "Project Code",
         "Requirement",
         "Type",
-        "Assigned To",
-        "Assigned Email",
+        "Employee",
         "Status",
         "Scope",
         "Notes",
         "Discussed Date",
-        "Start",
-        "Close",
+        "Start Date",
+        "Close Date",
         "Working Days",
         "Client Priority",
-        "Priority Source",
+        "Given By",
         "Created By",
-        "Created At",
       ];
 
-      const rows = tasks.map((t) => {
+      const rows = tasks.map((t, index) => {
         return [
-          csvEscape(t.projectId?.name || "-"),
-          csvEscape(t.projectId?.code || "-"),
-          csvEscape(t.recentRequirement || "-"),
-          csvEscape(t.requirementType || "-"),
-          csvEscape(t.assignedUserId?.fullName || "-"),
-          csvEscape(t.assignedUserId?.email || "-"),
+          index + 1,
+          csvEscape(t.projectName || t.projectId?.name || "-"),
+          csvEscape(t.requirement || "-"),
+          csvEscape(t.type || "-"),
+          csvEscape(t.employeeName || t.assignedUserId?.fullName || "-"),
           csvEscape(t.status || "-"),
           csvEscape(t.scope || "-"),
           csvEscape(t.notes || "-"),
           csvEscape(t.discussedDate || "-"),
-          csvEscape(t.originalClosureDate || "-"),
-          csvEscape(t.estimatedDate || "-"),
-          csvEscape(t.noOfDays || 0),
+          csvEscape(t.startDate || "-"),
+          csvEscape(t.closeDate || "-"),
+          csvEscape(t.workingDays || 0),
           csvEscape(t.clientPriority || "-"),
-          csvEscape(t.prioritySource || "-"),
-          csvEscape(t.createdBy || "-"),
-          csvEscape(t.createdAt ? t.createdAt.toISOString() : "-"),
+          csvEscape(t.givenBy || "-"),
+          csvEscape(t.createdByName || t.createdByUserId?.fullName || "-"),
         ].join(",");
       });
 

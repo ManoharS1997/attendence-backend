@@ -15,6 +15,12 @@ const taskSchema = new Schema(
       index: true,
     },
 
+    // 1️⃣ ADDED: Project Name (for employee view)
+    projectName: {
+      type: String,
+      required: true
+    },
+
     assignedUserId: {
       type: Schema.Types.ObjectId,
       ref: "User",
@@ -30,7 +36,7 @@ const taskSchema = new Schema(
 
     createdByRole: {
       type: String,
-      enum: ["admin", "manager", "employee"],
+      enum: ["employee"],
       required: true,
     },
 
@@ -39,19 +45,21 @@ const taskSchema = new Schema(
        =============================== */
     title: {
       type: String,
+      required: true,
       trim: true,
       maxlength: 200,
-      default: "",
     },
 
-    recentRequirement: {
+    // 2️⃣ RENAMED: recentRequirement → requirement
+    requirement: {
       type: String,
+      required: true,
       trim: true,
       maxlength: 1000,
-      default: "",
     },
 
-    requirementType: {
+    // 2️⃣ RENAMED: requirementType → type
+    type: {
       type: String,
       enum: ["NEW", "OLD", "BUG"],
       default: "NEW",
@@ -75,6 +83,7 @@ const taskSchema = new Schema(
     status: {
       type: String,
       enum: ["OPEN", "IN_PROGRESS", "ON_HOLD", "COMPLETED"],
+      required: true,
       default: "OPEN",
       index: true,
     },
@@ -82,6 +91,7 @@ const taskSchema = new Schema(
     scope: {
       type: String,
       enum: ["AGREED", "NOT_AGREED"],
+      required: true,
       default: "AGREED",
     },
 
@@ -103,7 +113,20 @@ const taskSchema = new Schema(
       default: "",
     },
 
-    noOfDays: {
+    // 4️⃣ ADDED: Start Date
+    startDate: {
+      type: String,
+      required: true
+    },
+
+    // 5️⃣ ADDED: Close Date
+    closeDate: {
+      type: String,
+      default: "",
+    },
+
+    // 7️⃣ REPLACED: noOfDays → workingDays
+    workingDays: {
       type: Number,
       default: 0,
       min: 0,
@@ -112,15 +135,17 @@ const taskSchema = new Schema(
     /* ===============================
        HOURS & PRIORITY
        =============================== */
-    estimateHours: {
+    // 2️⃣ RENAMED: estimateHours → estHours
+    estHours: {
       type: Number,
+      required: true,
       min: 0.5,
-      default: 0,
     },
 
     clientPriority: {
       type: String,
       enum: ["P1", "P2", "P3", "P4"],
+      required: true,
       default: "P3",
     },
 
@@ -128,6 +153,26 @@ const taskSchema = new Schema(
       type: String,
       enum: ["CLIENT", "MANAGER", "SERVICE_PROVIDER", "THIRD_PARTY"],
       default: "CLIENT",
+    },
+
+    givenBy: {
+      type: String,
+      required: true,
+    },
+
+    /* ===============================
+       PEOPLE NAMES (FOR DISPLAY)
+       =============================== */
+    // 3️⃣ ADDED: Employee Name
+    employeeName: {
+      type: String,
+      required: true
+    },
+
+    // 6️⃣ ADDED: Created By Name
+    createdByName: {
+      type: String,
+      required: true
     },
 
     /* ===============================

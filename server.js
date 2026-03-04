@@ -56,11 +56,10 @@ app.use(
   })
 );
 
-app.options("*", cors());
-app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Credentials", "true");
-  next();
-});
+app.options("*", cors({
+  origin: allowedOrigins,
+  credentials: true
+}));
 
 // ===================== BODY PARSERS =====================
 app.use(express.json({ limit: "10mb" }));
@@ -105,22 +104,53 @@ const httpServer = createServer(app);
 // ===================== SOCKET.IO SETUP =====================
 const io = new Server(httpServer, {
   cors: {
-    origin: allowedOrigins,
-    credentials: true,
-    methods: ["GET", "POST"]
-  }
+    origin: [
+      "http://localhost:5173",
+      "https://attendencetracker.nowitservices.com"
+    ],
+    methods: ["GET", "POST"],
+    credentials: true
+  },
+  transports: ["websocket", "polling"]
 });
 
 // Make io globally accessible
 app.set("io", io);
 
+// Store connected users (optional but useful for targeted notifications)
+const connectedUsers = new Map();
+
 io.on("connection", (socket) => {
   console.log("⚡ User connected:", socket.id);
   
+  // Listen for user authentication to map socket to user
+  socket.on("authenticate", (userId) => {
+    connectedUsers.set(userId, socket.id);
+    console.log(`🔐 User ${userId} mapped to socket ${socket.id}`);
+  });
+  
   socket.on("disconnect", () => {
     console.log("❌ User disconnected:", socket.id);
+    // Remove user from connected map
+    for (let [userId, socketId] of connectedUsers.entries()) {
+      if (socketId === socket.id) {
+        connectedUsers.delete(userId);
+        console.log(`👋 User ${userId} removed from connected map`);
+        break;
+      }
+    }
   });
 });
+
+// Helper function to send notification to specific user
+const sendNotificationToUser = (userId, notificationData) => {
+  const socketId = connectedUsers.get(userId.toString());
+  if (socketId) {
+    io.to(socketId).emit("new-notification", notificationData);
+    return true;
+  }
+  return false;
+};
 
 // ===================== START SERVER =====================
 async function startServer() {
@@ -132,7 +162,8 @@ async function startServer() {
     birthdayReminderJob();
 
     // ===================== 6PM DAILY MANAGER SUMMARY =====================
-    cron.schedule("* * * * *", async () => {
+    // Runs every day at 6:00 PM
+    cron.schedule("0 18 * * *", async () => {
       try {
         console.log("⏰ Running 6PM Manager Daily Summary Job");
 
@@ -142,8 +173,11 @@ async function startServer() {
         const year = today.getFullYear();
         const formattedDate = `${day}-${month}-${year}`;
 
-        const managers = await User.find({ role: "HR" });
+        // FIXED: Changed from "HR" to "manager" to match your role system
+        const managers = await User.find({ role: "manager" });
         const employees = await User.find({ role: "employee" });
+
+        console.log(`📊 Found ${managers.length} managers and ${employees.length} employees`);
 
         for (let manager of managers) {
           for (let emp of employees) {
@@ -172,7 +206,7 @@ async function startServer() {
             });
 
             if (!existing) {
-              await Notification.create({
+              const notification = await Notification.create({
                 user: manager._id,
                 type: "info",
                 title,
@@ -182,11 +216,18 @@ async function startServer() {
                 priority: 3,
               });
 
-              // 🔔 Real-time socket emit (optional but powerful)
-              io.emit("new-notification", {
-                managerId: manager._id,
+              // IMPROVED: Send notification only to the specific manager
+              const sent = sendNotificationToUser(manager._id, {
+                id: notification._id,
+                type: "info",
                 title,
+                message: `Hours: ${hours} hrs | Lunch: ${lunch} mins | Tasks: ${completedTasks} | Status: ${status}`,
+                timestamp: new Date(),
               });
+
+              if (sent) {
+                console.log(`🔔 Notification sent to manager ${manager.fullName} for employee ${emp.fullName}`);
+              }
             }
           }
         }
@@ -201,8 +242,12 @@ async function startServer() {
     httpServer.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
       console.log("🎂 Birthday reminder job active");
-      console.log("🔌 Socket.IO enabled");
-      console.log("⏰ 6PM Manager Summary job active");
+      console.log("🔌 Socket.IO enabled with user mapping");
+      console.log("⏰ 6PM Manager Summary job active (runs daily at 18:00)");
+      console.log("📋 System ready with fixes applied:");
+      console.log("   ✅ Manager role fixed (HR → manager)");
+      console.log("   ✅ Cron schedule fixed (* * * * * → 0 18 * * *)");
+      console.log("   ✅ Targeted notifications implemented");
     });
 
   } catch (err) {
