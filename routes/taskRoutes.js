@@ -38,26 +38,27 @@ const normalizeRole = (role) => {
 
 /**
  * Check if user can edit this task
+ * FIXED: Simplified to only compare user IDs, removed role comparison
  */
 const canEditTask = (user, task) => {
-  // Admin cannot edit
-  if (user.role === "admin") return false;
+  if (!user || !task) return false;
 
   const userRole = normalizeRole(user.role);
-  const taskCreatedByRole = normalizeRole(task.createdByRole);
 
-  // Employee can edit tasks they created
-  if (
-    userRole === "EMPLOYEE" &&
-    taskCreatedByRole === "EMPLOYEE" &&
-    task.createdByUserId.toString() === user._id.toString()
-  ) {
-    return true;
-  }
+  // Admin cannot edit
+  if (userRole === "ADMIN") return false;
 
-  // Manager is view only
-  if (userRole === "MANAGER") {
-    return false;
+  // Manager cannot edit
+  if (userRole === "MANAGER") return false;
+
+  // Employee can edit only their own tasks
+  if (userRole === "EMPLOYEE") {
+    // Get the creator ID - handle both populated and unpopulated cases
+    const createdById = task.createdByUserId?._id || task.createdByUserId;
+    const userId = user._id || user.id;
+
+    // Compare as strings to handle ObjectId vs string
+    return String(createdById) === String(userId);
   }
 
   return false;
@@ -67,14 +68,16 @@ const canEditTask = (user, task) => {
  * Check if user can view this task
  */
 const canViewTask = (user, task) => {
+  const userRole = normalizeRole(user.role);
+  
   // Admin can view everything
-  if (user.role === "admin") return true;
+  if (userRole === "ADMIN") return true;
 
   // Manager can view everything
-  if (user.role === "manager") return true;
+  if (userRole === "MANAGER") return true;
 
   // Employee can view tasks assigned to them or created by them
-  if (user.role === "employee") {
+  if (userRole === "EMPLOYEE") {
     return (
       task.assignedUserId?.toString() === user._id.toString() ||
       task.createdByUserId.toString() === user._id.toString()
@@ -143,7 +146,7 @@ const applyCompletedTaskToProject = async (task, project) => {
    ===================================================== */
 router.get("/all-admin", async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
+    if (normalizeRole(req.user.role) !== "ADMIN") {
       return res.status(403).json({ message: "Admin access only" });
     }
 
@@ -224,11 +227,11 @@ router.post("/", async (req, res) => {
       createdByName
     } = req.body;
 
-    const userRole = req.user.role;
+    const userRole = normalizeRole(req.user.role);
     const userId = req.user._id;
 
     // Only employees can create tasks
-    if (userRole !== "employee") {
+    if (userRole !== "EMPLOYEE") {
       return res.status(403).json({ 
         message: "Only employees can create tasks" 
       });
@@ -372,10 +375,11 @@ router.post("/", async (req, res) => {
    ===================================================== */
 router.get("/my", async (req, res) => {
   try {
+    const userRole = normalizeRole(req.user.role);
     let query = {};
 
     // Employee: see tasks assigned to them or created by them
-    if (req.user.role === "employee") {
+    if (userRole === "EMPLOYEE") {
       query = {
         $or: [
           { assignedUserId: req.user._id },
@@ -385,7 +389,7 @@ router.get("/my", async (req, res) => {
     }
     
     // Manager: see all tasks in their managed projects
-    if (req.user.role === "manager") {
+    if (userRole === "MANAGER") {
       const managedProjects = await Project.find({ manager: req.user._id }).select("_id");
       const projectIds = managedProjects.map(p => p._id);
       
@@ -397,7 +401,7 @@ router.get("/my", async (req, res) => {
     }
     
     // Admin: see all tasks (handled in /all-admin)
-    if (req.user.role === "admin") {
+    if (userRole === "ADMIN") {
       query = {};
     }
 
@@ -407,7 +411,7 @@ router.get("/my", async (req, res) => {
       .populate("createdByUserId", "fullName email employeeId")
       .sort({ createdAt: -1 });
 
-    // Format tasks with all fields (Employee View) - PERMANENT FIX APPLIED
+    // Format tasks with all fields (Employee View) - FIXED: Using updated canEditTask
     const formattedTasks = await Promise.all(
       tasks.map(async (task, index) => ({
         _id: task._id,
@@ -440,7 +444,7 @@ router.get("/my", async (req, res) => {
         estHours: task.estHours || task.estimateHours || 0,
         month: task.month,
         year: task.year,
-        canEdit: canEditTask(req.user, task)
+        canEdit: canEditTask(req.user, task) // FIXED: Now uses simplified logic
       }))
     );
 
@@ -457,6 +461,7 @@ router.get("/my", async (req, res) => {
 router.get("/project/:projectId", async (req, res) => {
   try {
     const { projectId } = req.params;
+    const userRole = normalizeRole(req.user.role);
 
     // Check project exists
     const project = await Project.findById(projectId);
@@ -465,13 +470,13 @@ router.get("/project/:projectId", async (req, res) => {
     }
 
     // Check permissions
-    if (req.user.role === "manager" && project.manager.toString() !== req.user._id.toString()) {
+    if (userRole === "MANAGER" && project.manager.toString() !== req.user._id.toString()) {
       return res.status(403).json({
         message: "You are not the manager of this project"
       });
     }
 
-    if (req.user.role === "employee") {
+    if (userRole === "EMPLOYEE") {
       const isAssigned = project.assignments?.some(
         assignment => assignment.user.toString() === req.user._id.toString()
       );
@@ -485,7 +490,7 @@ router.get("/project/:projectId", async (req, res) => {
     let query = { projectId };
     
     // Employee can only see their own tasks
-    if (req.user.role === "employee") {
+    if (userRole === "EMPLOYEE") {
       query = {
         projectId,
         $or: [
@@ -527,7 +532,7 @@ router.get("/project/:projectId", async (req, res) => {
         createdBy: task.createdByName || "Unknown",
         createdByEmail: task.createdByUserId?.email || "",
         estHours: task.estHours || task.estimateHours || 0,
-        canEdit: canEditTask(req.user, task)
+        canEdit: canEditTask(req.user, task) // FIXED: Now uses simplified logic
       }))
     );
 
@@ -558,7 +563,7 @@ router.get("/project/:projectId", async (req, res) => {
    ===================================================== */
 router.get("/all-manager", async (req, res) => {
   try {
-    if (req.user.role !== "manager") {
+    if (normalizeRole(req.user.role) !== "MANAGER") {
       return res.status(403).json({ message: "Manager access only" });
     }
 
@@ -580,7 +585,7 @@ router.get("/all-manager", async (req, res) => {
       .populate("createdByUserId", "fullName email employeeId")
       .sort({ createdAt: -1 });
 
-    // Format with all fields for manager view - PERMANENT FIX APPLIED
+    // Format with all fields for manager view
     const formattedTasks = await Promise.all(
       tasks.map(async (task, index) => ({
         sno: index + 1,
@@ -672,7 +677,8 @@ router.get("/:id", async (req, res) => {
       estHours: task.estHours || task.estimateHours,
       projectName: projectName,
       employeeName: task.employeeName,
-      createdByName: task.createdByName
+      createdByName: task.createdByName,
+      canEdit: canEditTask(req.user, task) // FIXED: Now uses simplified logic
     };
 
     res.json(formattedTask);
@@ -699,7 +705,7 @@ router.patch("/:id", async (req, res) => {
       return res.status(404).json({ message: "Task not found" });
     }
 
-    // Check edit permissions
+    // Check edit permissions - FIXED: Using updated canEditTask
     if (!canEditTask(req.user, task)) {
       return res.status(403).json({
         message: "You do not have permission to edit this task"
@@ -733,13 +739,14 @@ router.patch("/:id", async (req, res) => {
 
     // Validate assignedUserRole if provided
     if (updates.assignedUserRole) {
-      const validRoles = ["EMPLOYEE", "MANAGER", "ADMIN"];
-      if (!validRoles.includes(updates.assignedUserRole.toUpperCase())) {
+      const validRoles = ["EMPLOYEE", "MANAGER", "ADMIN", "DEVELOPER"];
+      const normalizedRole = normalizeRole(updates.assignedUserRole);
+      if (!validRoles.includes(normalizedRole)) {
         return res.status(400).json({ 
-          message: "assignedUserRole must be one of: EMPLOYEE, MANAGER, ADMIN" 
+          message: "assignedUserRole must be one of: EMPLOYEE, MANAGER, ADMIN, DEVELOPER" 
         });
       }
-      updates.assignedUserRole = updates.assignedUserRole.toUpperCase();
+      updates.assignedUserRole = normalizedRole;
     }
 
     // Validate est hours
