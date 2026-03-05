@@ -1,4 +1,3 @@
-// routes/taskRoutes.js
 import express from "express";
 import mongoose from "mongoose";
 import Task from "../models/Task.js";
@@ -96,7 +95,7 @@ const applyCompletedTaskToProject = async (task, project) => {
   const taskRole = normalizeRole(task.assignedUserRole || task.role);
   if (taskRole === "DEVELOPER") return;
 
-  const hours = task.estHours || 0;                    // FIXED: estimateHours → estHours
+  const hours = task.estHours || 0;
   if (hours <= 0) return;
 
   // Find or create monthly consumption entry
@@ -139,9 +138,9 @@ const applyCompletedTaskToProject = async (task, project) => {
   await task.save();
 };
 
-// ===============================
-// ADMIN – GET ALL TASKS (VIEW ONLY)
-// ===============================
+/* =====================================================
+   ADMIN – GET ALL TASKS (VIEW ONLY)
+   ===================================================== */
 router.get("/all-admin", async (req, res) => {
   try {
     if (req.user.role !== "admin") {
@@ -154,30 +153,42 @@ router.get("/all-admin", async (req, res) => {
       .populate("createdByUserId", "fullName email employeeId")
       .sort({ createdAt: -1 });
 
-    // Format tasks for admin view with NEW field names
-    const formattedTasks = tasks.map(task => ({
-      _id: task._id,
-      project: task.projectId ? `${task.projectId.name} (${task.projectId.code})` : 'N/A',
-      requirement: task.requirement || 'N/A',                    // FIXED: recentRequirement → requirement
-      type: task.type || 'N/A',                                   // FIXED: requirementType → type
-      assignedTo: task.assignedUserId ? `${task.assignedUserId.fullName} (${task.assignedUserId.email})` : 'Unassigned',
-      employeeName: task.employeeName || 'N/A',                   // ADDED: employeeName
-      status: task.status || 'OPEN',
-      scope: task.scope || 'AGREED',
-      notes: task.notes || '',
-      discussedDate: task.discussedDate || '',
-      startDate: task.startDate || '',                             // FIXED: estimatedDate → startDate
-      closeDate: task.closeDate || '',                             // FIXED: originalClosureDate → closeDate
-      workingDays: task.workingDays || 0,                          // FIXED: noOfDays → workingDays
-      clientPriority: task.clientPriority || 'P3',
-      givenBy: task.givenBy || 'N/A',
-      createdBy: task.createdByName || 'Unknown',                  // ADDED: createdByName
-      createdByRole: task.createdByRole,
-      createdAt: task.createdAt,
-      estHours: task.estHours || 0,                                 // FIXED: estimateHours → estHours
-      month: task.month,
-      year: task.year
-    }));
+    // Format tasks for admin view with all fields
+    const formattedTasks = await Promise.all(
+      tasks.map(async (task) => ({
+        _id: task._id,
+        project:
+          task.projectId?.name ||
+          (await Project.findById(task.projectId))?.name ||
+          task.projectName ||
+          "N/A",
+        projectCode: task.projectId?.code || "N/A",
+        projectStatus: task.projectId?.status || "N/A",
+        requirement: task.requirement || task.recentRequirement || "N/A",
+        type: task.type || task.requirementType || "N/A",
+        assignedTo: task.assignedUserId ? `${task.assignedUserId.fullName} (${task.assignedUserId.email})` : "Unassigned",
+        assignedToEmail: task.assignedUserId?.email || "",
+        assignedToId: task.assignedUserId?.employeeId || "",
+        employeeName: task.employeeName || "N/A",
+        status: task.status || "OPEN",
+        scope: task.scope || "AGREED",
+        notes: task.notes || "",
+        discussedDate: task.discussedDate || "",
+        startDate: task.startDate || task.estimatedDate || "",
+        closeDate: task.closeDate || task.originalClosureDate || "",
+        workingDays: task.workingDays || task.noOfDays || 0,
+        clientPriority: task.clientPriority || "P3",
+        givenBy: task.givenBy || "N/A",
+        createdBy: task.createdByName || "Unknown",
+        createdByEmail: task.createdByUserId?.email || "",
+        createdByRole: task.createdByRole,
+        createdAt: task.createdAt,
+        estHours: task.estHours || task.estimateHours || 0,
+        month: task.month,
+        year: task.year,
+        countedInProject: task.countedInProject || false
+      }))
+    );
 
     res.json(formattedTasks);
   } catch (err) {
@@ -193,24 +204,24 @@ router.post("/", async (req, res) => {
   try {
     const {
       projectId,
-      projectName,                                         // ADDED: projectName
+      projectName,
       assignedUserId,
       title,
       description,
-      estHours,                                            // FIXED: estimateHours → estHours
+      estHours,
       month,
       year,
       notes,
-      requirement,                                         // FIXED: recentRequirement → requirement
-      type,                                                // FIXED: requirementType → type
+      requirement,
+      type,
       scope,
       discussedDate,
-      closeDate,                                           // FIXED: originalClosureDate → closeDate
-      startDate,                                           // FIXED: estimatedDate → startDate
+      closeDate,
+      startDate,
       clientPriority,
       prioritySource,
-      employeeName,                                        // ADDED: employeeName
-      createdByName                                        // ADDED: createdByName
+      employeeName,
+      createdByName
     } = req.body;
 
     const userRole = req.user.role;
@@ -281,29 +292,29 @@ router.post("/", async (req, res) => {
     const finalMonth = month || now.getMonth() + 1;
     const finalYear = year || now.getFullYear();
 
-    // Create task data for employee with NEW field names
+    // Create task data for employee
     const taskData = {
       projectId: finalProjectId,
-      projectName: finalProjectName,                       // ADDED: projectName
+      projectName: finalProjectName,
       assignedUserId: userId,
       createdByUserId: userId,
       createdByRole: "employee",
-      employeeName: employeeName || req.user.fullName || "Employee",    // ADDED: employeeName
-      createdByName: createdByName || req.user.fullName || "Employee",  // ADDED: createdByName
+      employeeName: employeeName || req.user.fullName || "Employee",
+      createdByName: createdByName || req.user.fullName || "Employee",
       title: finalTitle.trim(),
       description: description?.trim() || "",
-      estHours: Math.max(Number(estHours), 0.5),           // FIXED: estimateHours → estHours
+      estHours: Math.max(Number(estHours), 0.5),
       month: finalMonth,
       year: finalYear,
       notes: notes?.trim() || "",
-      requirement: requirement?.trim() || "General task",  // FIXED: recentRequirement → requirement
-      type: type || "NEW",                                  // FIXED: requirementType → type
+      requirement: requirement?.trim() || "General task",
+      type: type || "NEW",
       status: "OPEN",
       scope: scope || "AGREED",
       discussedDate: discussedDate || "",
-      closeDate: closeDate || "",                           // FIXED: originalClosureDate → closeDate
-      startDate: startDate || "",                           // FIXED: estimatedDate → startDate
-      workingDays: 0,                                        // FIXED: noOfDays → workingDays
+      closeDate: closeDate || "",
+      startDate: startDate || "",
+      workingDays: 0,
       clientPriority: clientPriority || "P3",
       prioritySource: prioritySource || "CLIENT",
       givenBy: req.user.fullName || "Employee"
@@ -357,7 +368,7 @@ router.post("/", async (req, res) => {
 });
 
 /* =====================================================
-   GET MY TASKS - ENHANCED WITH ALL FIELDS
+   GET MY TASKS - EMPLOYEE VIEW
    ===================================================== */
 router.get("/my", async (req, res) => {
   try {
@@ -396,35 +407,42 @@ router.get("/my", async (req, res) => {
       .populate("createdByUserId", "fullName email employeeId")
       .sort({ createdAt: -1 });
 
-    // Format tasks with all fields (Employee View)
-    const formattedTasks = tasks.map(task => ({
-      _id: task._id,
-      sno: tasks.indexOf(task) + 1,
-      project: task.projectName || (task.projectId ? task.projectId.name : 'N/A'),  // ADDED: projectName
-      projectStatus: task.projectId?.status || 'N/A',
-      requirement: task.requirement || 'N/A',                // FIXED: recentRequirement → requirement
-      type: task.type || 'N/A',                               // FIXED: requirementType → type
-      assignedTo: task.assignedUserId ? task.assignedUserId.fullName : 'Unassigned',
-      assignedToEmail: task.assignedUserId?.email || '',
-      employeeName: task.employeeName || 'N/A',               // ADDED: employeeName
-      status: task.status || 'OPEN',
-      scope: task.scope || 'AGREED',
-      notes: task.notes || '',
-      discussedDate: task.discussedDate || '',
-      startDate: task.startDate || '',                         // FIXED: estimatedDate → startDate
-      closeDate: task.closeDate || '',                         // FIXED: originalClosureDate → closeDate
-      workingDays: task.workingDays || 0,                      // FIXED: noOfDays → workingDays
-      clientPriority: task.clientPriority || 'P3',
-      givenBy: task.givenBy || 'N/A',
-      createdBy: task.createdByName || 'Unknown',              // ADDED: createdByName
-      createdByEmail: task.createdByUserId?.email || '',
-      createdByRole: task.createdByRole,
-      createdAt: task.createdAt,
-      estHours: task.estHours || 0,                             // FIXED: estimateHours → estHours
-      month: task.month,
-      year: task.year,
-      canEdit: canEditTask(req.user, task)
-    }));
+    // Format tasks with all fields (Employee View) - PERMANENT FIX APPLIED
+    const formattedTasks = await Promise.all(
+      tasks.map(async (task, index) => ({
+        _id: task._id,
+        sno: index + 1,
+        project:
+          task.projectId?.name ||
+          (await Project.findById(task.projectId))?.name ||
+          task.projectName ||
+          "N/A",
+        projectStatus: task.projectId?.status || "N/A",
+        requirement: task.requirement || task.recentRequirement || "N/A",
+        type: task.type || task.requirementType || "N/A",
+        assignedTo: task.assignedUserId ? task.assignedUserId.fullName : "Unassigned",
+        assignedToEmail: task.assignedUserId?.email || "",
+        assignedToId: task.assignedUserId?.employeeId || "",
+        employeeName: task.employeeName || "N/A",
+        status: task.status || "OPEN",
+        scope: task.scope || "AGREED",
+        notes: task.notes || "",
+        discussedDate: task.discussedDate || "",
+        startDate: task.startDate || task.estimatedDate || "",
+        closeDate: task.closeDate || task.originalClosureDate || "",
+        workingDays: task.workingDays || task.noOfDays || 0,
+        clientPriority: task.clientPriority || "P3",
+        givenBy: task.givenBy || "N/A",
+        createdBy: task.createdByName || "Unknown",
+        createdByEmail: task.createdByUserId?.email || "",
+        createdByRole: task.createdByRole,
+        createdAt: task.createdAt,
+        estHours: task.estHours || task.estimateHours || 0,
+        month: task.month,
+        year: task.year,
+        canEdit: canEditTask(req.user, task)
+      }))
+    );
 
     res.json({ tasks: formattedTasks });
   } catch (err) {
@@ -447,14 +465,12 @@ router.get("/project/:projectId", async (req, res) => {
     }
 
     // Check permissions
-    // Manager of this project
     if (req.user.role === "manager" && project.manager.toString() !== req.user._id.toString()) {
       return res.status(403).json({
         message: "You are not the manager of this project"
       });
     }
 
-    // Employee must be assigned to project
     if (req.user.role === "employee") {
       const isAssigned = project.assignments?.some(
         assignment => assignment.user.toString() === req.user._id.toString()
@@ -484,28 +500,36 @@ router.get("/project/:projectId", async (req, res) => {
       .populate("createdByUserId", "fullName email")
       .sort({ createdAt: -1 });
 
-    // Format tasks with NEW field names
-    const formattedTasks = tasks.map(task => ({
-      _id: task._id,
-      sno: tasks.indexOf(task) + 1,
-      project: task.projectName || `${project.name} (${project.code})`,  // ADDED: projectName
-      requirement: task.requirement,                                      // FIXED: recentRequirement → requirement
-      type: task.type,                                                    // FIXED: requirementType → type
-      assignedTo: task.assignedUserId?.fullName || 'Unassigned',
-      employeeName: task.employeeName || 'N/A',                           // ADDED: employeeName
-      status: task.status,
-      scope: task.scope,
-      notes: task.notes,
-      discussedDate: task.discussedDate,
-      startDate: task.startDate,                                          // FIXED: estimatedDate → startDate
-      closeDate: task.closeDate,                                          // FIXED: originalClosureDate → closeDate
-      workingDays: task.workingDays,                                      // FIXED: noOfDays → workingDays
-      clientPriority: task.clientPriority,
-      givenBy: task.givenBy || (task.prioritySource === 'CLIENT' ? 'Client' : 'Internal'),
-      createdBy: task.createdByName || 'Unknown',                         // ADDED: createdByName
-      estHours: task.estHours,                                            // FIXED: estimateHours → estHours
-      canEdit: canEditTask(req.user, task)
-    }));
+    // Format tasks with project name
+    const formattedTasks = await Promise.all(
+      tasks.map(async (task, index) => ({
+        _id: task._id,
+        sno: index + 1,
+        project:
+          task.projectId?.name ||
+          (await Project.findById(task.projectId))?.name ||
+          task.projectName ||
+          `${project.name} (${project.code})`,
+        requirement: task.requirement || task.recentRequirement || "N/A",
+        type: task.type || task.requirementType || "N/A",
+        assignedTo: task.assignedUserId?.fullName || "Unassigned",
+        assignedToEmail: task.assignedUserId?.email || "",
+        employeeName: task.employeeName || "N/A",
+        status: task.status || "OPEN",
+        scope: task.scope || "AGREED",
+        notes: task.notes || "",
+        discussedDate: task.discussedDate || "",
+        startDate: task.startDate || task.estimatedDate || "",
+        closeDate: task.closeDate || task.originalClosureDate || "",
+        workingDays: task.workingDays || task.noOfDays || 0,
+        clientPriority: task.clientPriority || "P3",
+        givenBy: task.givenBy || (task.prioritySource === "CLIENT" ? "Client" : "Internal"),
+        createdBy: task.createdByName || "Unknown",
+        createdByEmail: task.createdByUserId?.email || "",
+        estHours: task.estHours || task.estimateHours || 0,
+        canEdit: canEditTask(req.user, task)
+      }))
+    );
 
     // Calculate statistics
     const stats = {
@@ -518,7 +542,11 @@ router.get("/project/:projectId", async (req, res) => {
       }
     };
 
-    res.json({ tasks: formattedTasks, stats, project: { name: project.name, code: project.code } });
+    res.json({ 
+      tasks: formattedTasks, 
+      stats, 
+      project: { name: project.name, code: project.code } 
+    });
   } catch (err) {
     console.error("Fetch project tasks error:", err);
     res.status(500).json({ message: "Error fetching project tasks" });
@@ -543,36 +571,53 @@ router.get("/all-manager", async (req, res) => {
     }
 
     // Get all tasks from managed projects
-    const tasks = await Task.find({ projectId: { $in: projectIds } })
+    const tasks = await Task.find({
+      projectId: { $in: projectIds },
+      createdByRole: "employee"
+    })
       .populate("projectId", "name code status")
       .populate("assignedUserId", "fullName email employeeId")
       .populate("createdByUserId", "fullName email employeeId")
       .sort({ createdAt: -1 });
 
-    // Format with all fields for manager view (Manager/Admin View)
-    const formattedTasks = tasks.map((task, index) => ({
-      sno: index + 1,
-      _id: task._id,
-      project: task.projectName || (task.projectId ? `${task.projectId.name} (${task.projectId.code})` : 'N/A'),  // ADDED: projectName
-      requirement: task.requirement || 'N/A',                // FIXED: recentRequirement → requirement
-      type: task.type || 'N/A',                               // FIXED: requirementType → type
-      employee: task.employeeName || 'N/A',                   // ADDED: employeeName
-      status: task.status || 'OPEN',
-      scope: task.scope || 'AGREED',
-      notes: task.notes || '',
-      discussedDate: task.discussedDate || '',
-      startDate: task.startDate || '',                         // FIXED: estimatedDate → startDate
-      closeDate: task.closeDate || '',                         // FIXED: originalClosureDate → closeDate
-      workingDays: task.workingDays || 0,                      // FIXED: noOfDays → workingDays
-      clientPriority: task.clientPriority || 'P3',
-      givenBy: task.givenBy || 'N/A',
-      createdBy: task.createdByName || 'Unknown',              // ADDED: createdByName
-      createdByEmail: task.createdByUserId?.email || '',
-      createdByRole: task.createdByRole,
-      createdAt: task.createdAt,
-      estHours: task.estHours || 0,                             // FIXED: estimateHours → estHours
-      canEdit: false // Manager view only
-    }));
+    // Format with all fields for manager view - PERMANENT FIX APPLIED
+    const formattedTasks = await Promise.all(
+      tasks.map(async (task, index) => ({
+        sno: index + 1,
+        _id: task._id,
+        project:
+          task.projectId?.name ||
+          (await Project.findById(task.projectId))?.name ||
+          task.projectName ||
+          "N/A",
+        projectCode: task.projectId?.code || "N/A",
+        projectStatus: task.projectId?.status || "N/A",
+        requirement: task.requirement || task.recentRequirement || "N/A",
+        type: task.type || task.requirementType || "N/A",
+        employee: task.employeeName || "N/A",
+        assignedTo: task.assignedUserId?.fullName || "Unassigned",
+        assignedToEmail: task.assignedUserId?.email || "",
+        assignedToId: task.assignedUserId?.employeeId || "",
+        status: task.status || "OPEN",
+        scope: task.scope || "AGREED",
+        notes: task.notes || "",
+        discussedDate: task.discussedDate || "",
+        startDate: task.startDate || task.estimatedDate || "",
+        closeDate: task.closeDate || task.originalClosureDate || "",
+        workingDays: task.workingDays || task.noOfDays || 0,
+        clientPriority: task.clientPriority || "P3",
+        givenBy: task.givenBy || "N/A",
+        createdBy: task.createdByName || "Unknown",
+        createdByEmail: task.createdByUserId?.email || "",
+        createdByRole: task.createdByRole,
+        createdAt: task.createdAt,
+        estHours: task.estHours || task.estimateHours || 0,
+        month: task.month,
+        year: task.year,
+        countedInProject: task.countedInProject || false,
+        canEdit: false // Manager view only
+      }))
+    );
 
     res.json(formattedTasks);
   } catch (err) {
@@ -608,16 +653,24 @@ router.get("/:id", async (req, res) => {
       });
     }
 
-    // Format single task with NEW field names
+    // Get project name if needed
+    let projectName = task.projectName;
+    if (!projectName && task.projectId) {
+      const project = await Project.findById(task.projectId);
+      projectName = project?.name || "N/A";
+    }
+
+    // Format single task with all fields
     const formattedTask = {
       ...task.toObject(),
-      requirement: task.requirement,
-      type: task.type,
-      startDate: task.startDate,
-      closeDate: task.closeDate,
-      workingDays: task.workingDays,
-      estHours: task.estHours,
-      projectName: task.projectName,
+      project: projectName,
+      requirement: task.requirement || task.recentRequirement,
+      type: task.type || task.requirementType,
+      startDate: task.startDate || task.estimatedDate,
+      closeDate: task.closeDate || task.originalClosureDate,
+      workingDays: task.workingDays || task.noOfDays,
+      estHours: task.estHours || task.estimateHours,
+      projectName: projectName,
       employeeName: task.employeeName,
       createdByName: task.createdByName
     };
@@ -694,6 +747,26 @@ router.patch("/:id", async (req, res) => {
       updates.estHours = Math.max(Number(updates.estHours), 0.5);
     }
 
+    // Handle legacy field mappings
+    if (updates.recentRequirement && !updates.requirement) {
+      updates.requirement = updates.recentRequirement;
+    }
+    if (updates.requirementType && !updates.type) {
+      updates.type = updates.requirementType;
+    }
+    if (updates.estimateHours && !updates.estHours) {
+      updates.estHours = updates.estimateHours;
+    }
+    if (updates.estimatedDate && !updates.startDate) {
+      updates.startDate = updates.estimatedDate;
+    }
+    if (updates.originalClosureDate && !updates.closeDate) {
+      updates.closeDate = updates.originalClosureDate;
+    }
+    if (updates.noOfDays && !updates.workingDays) {
+      updates.workingDays = updates.noOfDays;
+    }
+
     // Calculate workingDays if dates are updated
     if (updates.closeDate && updates.startDate) {
       const start = new Date(updates.startDate);
@@ -720,7 +793,6 @@ router.patch("/:id", async (req, res) => {
     if (!wasCompleted && isNowCompleted) {
       await applyCompletedTaskToProject(updatedTask, project);
       
-      // 🚀 Emit socket event for project balance update
       emitDashboardUpdate(req, "PROJECT_BALANCE_UPDATED", {
         projectId: project._id,
         taskId: updatedTask._id,
@@ -728,7 +800,6 @@ router.patch("/:id", async (req, res) => {
       });
     }
 
-    // 🚀 Emit socket event for task update
     emitDashboardUpdate(req, "TASK_UPDATED", {
       taskId: updatedTask._id,
       projectId: project._id,
