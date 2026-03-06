@@ -790,6 +790,102 @@ router.get("/extra-hours", authMiddleware, async (req, res) => {
   }
 });
 
+/* ------------------------ POST /api/attendance/wfh-request ------------------------ */
+/**
+ * Employee requests Work From Home
+ */
+router.post("/wfh-request", authMiddleware, async (req, res) => {
+  try {
+    const { startDate, endDate, location, reason } = req.body;
+
+    if (!startDate || !endDate || !location || !reason) {
+      return res.status(400).json({
+        message: "All WFH fields are required"
+      });
+    }
+
+    const start = new Date(startDate.split("-").reverse().join("-"));
+    const end = new Date(endDate.split("-").reverse().join("-"));
+
+    const totalDays =
+      Math.floor((end - start) / (1000 * 60 * 60 * 24)) + 1;
+
+    if (totalDays <= 0) {
+      return res.status(400).json({
+        message: "Invalid WFH date range"
+      });
+    }
+
+    const request = await AttendanceRequest.create({
+      user: req.user.id,
+      date: startDate,
+      type: "CREATE",
+      toStatus: "WORK FROM HOME",
+      note: reason,
+      wfhDetails: {
+        startDate,
+        endDate,
+        totalDays,
+        location,
+        reason
+      },
+      status: "PENDING"
+    });
+
+    await createLog({
+      type: "OPERATION",
+      action: "WFH_REQUEST_CREATE",
+      entity: "ATTENDANCE_REQUEST",
+      user: req.user.id,
+      userName: req.user.fullName,
+      userEmail: req.user.email,
+      role: req.user.role,
+      description: `WFH request from ${startDate} to ${endDate}`,
+      status: "SUCCESS",
+      ipAddress: getClientIp(req),
+      details: {
+        startDate,
+        endDate,
+        totalDays,
+        location
+      }
+    });
+
+    // 🔔 Socket emit for real-time updates
+    emitDashboardUpdate(req, "WFH_REQUEST_CREATED", {
+      requestId: request._id,
+      userId: req.user.id,
+      startDate,
+      endDate,
+      totalDays
+    });
+
+    res.status(201).json({
+      message: "WFH request submitted to manager",
+      requestId: request._id
+    });
+
+  } catch (err) {
+    console.error("WFH request error:", err);
+    
+    await createLog({
+      type: "ERROR",
+      action: "WFH_REQUEST_CREATE",
+      entity: "ATTENDANCE_REQUEST",
+      user: req.user?.id,
+      userName: req.user?.fullName,
+      userEmail: req.user?.email,
+      role: req.user?.role,
+      description: "Failed to create WFH request",
+      status: "FAILED",
+      ipAddress: getClientIp(req),
+      details: { error: err.message }
+    });
+    
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 /* ------------------------ GET /api/attendance/my ------------------------ */
 /**
  * Get logged-in user's attendance records
@@ -859,6 +955,12 @@ router.get(
 
       // ✅ SAFETY FIX: remove broken requests with missing user
       const safePending = pending.filter(r => r.user);
+      safePending.forEach((r) => {
+  if (r.toStatus === "WORK FROM HOME" && r.wfhDetails) {
+    r.requestedTimings =
+      `${r.wfhDetails.startDate} → ${r.wfhDetails.endDate}`;
+  }
+});
 
       res.json(safePending);
     } catch (err) {
@@ -951,6 +1053,41 @@ router.patch(
       // Apply decision to existing attendance record
       if (attendanceDoc) {
         if (decision === "APPROVED") {
+          // ✅ WFH attendance generation
+if (request.toStatus === "WORK FROM HOME" && request.wfhDetails) {
+
+  const { startDate, endDate } = request.wfhDetails;
+
+  const start = new Date(startDate.split("-").reverse().join("-"));
+  const end = new Date(endDate.split("-").reverse().join("-"));
+
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const yyyy = d.getFullYear();
+
+    const dateStr = `${dd}-${mm}-${yyyy}`;
+
+    await Attendance.findOneAndUpdate(
+      { user: request.user._id, date: dateStr },
+      {
+        user: request.user._id,
+        date: dateStr,
+        status: "WORK FROM HOME",
+        hoursWorked: 8,
+        managerDecision: {
+          status: "APPROVED",
+          decidedBy: req.user.id,
+          decidedAt: new Date()
+        }
+      },
+      { upsert: true }
+    );
+
+  }
+
+}
 
           if (request.toStatus === "PRESENT FULL DAY") {
             attendanceDoc.isLeaveRequest = false;
@@ -1087,6 +1224,7 @@ if (request.toStatus === "PRESENT HALF DAY") {
       await request.save();
       
       // 🔔 Unified socket event for attendance update
+           // 🔔 Unified socket event for attendance update
       emitDashboardUpdate(req, "ATTENDANCE_UPDATED", {
         requestId: request._id,
         date: request.date,
@@ -1116,6 +1254,8 @@ if (request.toStatus === "PRESENT HALF DAY") {
           employeeName: request.user.fullName
         }
       });
+
+      
 
       return res.json({
         message: attendanceDoc

@@ -99,7 +99,19 @@ const attendanceRequestSchema = new Schema(
       type: String,
       default: ""
     },
-
+/**
+ * WORK FROM HOME REQUEST DETAILS
+ */
+wfhDetails: {
+  startDate: { type: String },   // dd-mm-yyyy
+  endDate: { type: String },     // dd-mm-yyyy
+  totalDays: { type: Number },   // auto calculated
+  location: {
+    type: String,
+    enum: ["HOME", "CLIENT LOCATION", "ONSITE LOCATION"]
+  },
+  reason: { type: String }
+},
     /**
      * Request status
      */

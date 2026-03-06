@@ -484,7 +484,7 @@ router.get("/:id", authMiddleware, async (req, res) => {
       openTasks: tasks.filter(t => t.status === "OPEN").length,
       inProgressTasks: tasks.filter(t => t.status === "IN_PROGRESS").length,
       completedTasks: tasks.filter(t => t.status === "COMPLETED").length,
-      totalEstimatedHours: tasks.reduce((sum, task) => sum + (task.estimateHours || 0), 0)
+      totalEstimatedHours: tasks.reduce((sum, task) => sum + (task.estHours || 0), 0)
     };
 
     res.json({
@@ -576,7 +576,7 @@ router.get("/:id/balance", authMiddleware, async (req, res) => {
 
     // Get all tasks for this project
     const tasks = await Task.find({ projectId: project._id })
-      .select("estimateHours status month year assignedUserRole")
+      .select("estHours status month year assignedUserRole")
       .sort({ month: 1, year: 1 });
 
     // Calculate consumption by month
@@ -591,20 +591,29 @@ router.get("/:id/balance", authMiddleware, async (req, res) => {
             consumedHours: 0
           };
         }
-        monthlyConsumption[key].consumedHours += task.estimateHours || 0;
+        monthlyConsumption[key].consumedHours += task.estHours || 0;
       }
     });
 
     const monthlyData = Object.values(monthlyConsumption);
+    let totalConsumed = 0;
+
+monthlyData.forEach(m => {
+  totalConsumed += m.consumedHours;
+});
+
+const balanceHours =
+  (project.totalEstimatedHours || 0) - totalConsumed;
 
     res.json({
-      projectName: project.name,
-      projectCode: project.code,
-      totalEstimatedHours: project.totalEstimatedHours,
-      balanceHours: project.balanceHours,
-      consumedHours: project.consumedHours,
+  projectName: project.name,
+  projectCode: project.code,
+  totalEstimatedHours: project.totalEstimatedHours,
+  balanceHours: balanceHours,
+  consumedHours: totalConsumed,
       monthlyConsumption: monthlyData,
       consumptionByRole: project.consumptionByRole || [],
+workedHours: totalConsumed,
       tasksCount: tasks.length,
       completedTasks: tasks.filter(t => t.status === "COMPLETED").length
     });
