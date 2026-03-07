@@ -64,6 +64,7 @@ app.options("*", cors({
 // ===================== BODY PARSERS =====================
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
+app.use("/uploads", express.static("uploads"));
 
 // ===================== HEALTH CHECK =====================
 app.get("/health", (req, res) => {

@@ -76,6 +76,10 @@ const taskSchema = new Schema(
       default: "",
       maxlength: 2000,
     },
+    attachment: {
+  type: String,
+  default: null
+},
 
     /* ===============================
        STATUS & SCOPE
